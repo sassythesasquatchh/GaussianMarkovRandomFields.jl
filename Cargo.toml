@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "crates/gmrf-core",
+    "crates/gmrf-observation",
+    "crates/gmrf-latent",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com"  # update if needed

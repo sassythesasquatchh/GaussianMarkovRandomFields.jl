@@ -1,0 +1,16 @@
+[package]
+name = "gmrf-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Gaussian Markov random field primitives in Rust"
+
+[dependencies]
+nalgebra = { version = "0.32", features = ["rand"] }
+rand = "0.8"
+rand_distr = "0.4"
+thiserror = "1"
+
+[dev-dependencies]
+approx = "0.5"

@@ -1,0 +1,17 @@
+[package]
+name = "gmrf-latent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Latent model building blocks for Gaussian Markov random fields"
+authors = ["Contributors"]
+
+[dependencies]
+gmrf-core = { path = "../gmrf-core" }
+nalgebra = { version = "0.32", features = ["rand"] }
+thiserror = "1"
+rand = "0.8"
+approx = { version = "0.5", default-features = false }
+
+[dev-dependencies]
+rand_distr = "0.4"

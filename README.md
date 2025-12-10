@@ -1,86 +1,65 @@
-<h1 align="center">
-  GaussianMarkovRandomFields.jl
-</h1>
+# Gaussian Markov Random Fields (Rust)
 
-<p align="center">
-    <picture align="center">
-        <img alt="Logo for the GaussianMarkovRandomFields.jl package." src="https://github.com/timweiland/GaussianMarkovRandomFields.jl/blob/main/docs/src/assets/logo.svg" width="200px" height="200px">
-    </picture>
-    <br>
-    <strong>⚡ Fast, flexible and user-centered Julia package for Bayesian inference with sparse Gaussians</strong>
-</p>
+This repository now hosts a Rust implementation of Gaussian Markov random fields (GMRFs).
+The code is organized as a Cargo workspace with three crates:
 
-<div align="center">
+- `gmrf-core`: Fundamental types for representing weighted graphs, constructing Laplacian-based precision matrices, and working
+with dense Gaussian Markov random fields.
+- `gmrf-observation`: Reusable observation models built on top of the core crate, including linear Gaussian observations and conditioning helpers.
+- `gmrf-latent`: Latent model building blocks such as AR(1) and random walk precision constructors that create ready-to-use GMRF priors.
 
-[![](https://img.shields.io/badge/docs-stable-blue.svg)](https://timweiland.github.io/GaussianMarkovRandomFields.jl/stable)
-[![](https://img.shields.io/badge/docs-dev-blue.svg)](https://timweiland.github.io/GaussianMarkovRandomFields.jl/dev)
+You will need Rust (edition 2021) installed via [`rustup`](https://rustup.rs/).
+Run the full test suite with:
 
-[![Build Status](https://github.com/timweiland/GaussianMarkovRandomFields.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/timweiland/GaussianMarkovRandomFields.jl/actions/workflows/CI.yml?query=branch%3Amain)
-[![Coverage](https://codecov.io/gh/timweiland/GaussianMarkovRandomFields.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/timweiland/GaussianMarkovRandomFields.jl)
-[![Aqua](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
-[![code style: runic](https://img.shields.io/badge/code_style-%E1%9A%B1%E1%9A%A2%E1%9A%BE%E1%9B%81%E1%9A%B2-black)](https://github.com/fredrikekre/Runic.jl)
-
-</div>
-
-Gaussian Markov Random Fields (GMRFs) are Gaussian distributions with sparse
-precision (inverse covariance) matrices.
-GaussianMarkovRandomFields.jl provides utilities for working with GMRFs in Julia.
-The goal is to enable **flexible** and **efficient** Bayesian inference from
-GMRFs, powered by sparse linear algebra.
-
-In particular, we support the creation of GMRFs through finite element method
-discretizations of stochastic partial differential equations (SPDEs).
-This unlocks efficient GMRF-based approximations to commonly used Gaussian
-process priors.
-Furthermore, the expressive power of SPDEs allows for flexible, problem-tailored
-priors.
-
-## Contents
-
-- [Installation](#installation)
-- [Your first GMRF](#your-first-gmrf)
-- [Contributing](#contributing)
-
-## Installation
-
-GaussianMarkovRandomFields.jl is a registered Julia package.
-To install it, launch the Julia REPL and type `] add GaussianMarkovRandomFields`. 
-
-## Your first GMRF
-
-Let's construct a GMRF approximation to a Matérn process from observation points:
-
-``` julia
-using GaussianMarkovRandomFields
-
-# Define observation points  
-points = [0.1 0.0; -0.3 0.55; 0.2 0.8; -0.1 -0.2]  # N×2 matrix
-
-# Create Matérn latent model (automatically generates mesh and discretization)
-model = MaternModel(points; smoothness = 1)
-x = model(range = 0.3)  # Construct GMRF with specified range
+```bash
+cargo test
 ```
 
-`x` is a Gaussian distribution, and we can compute all the things Gaussians are
-known for.
+Add the crates to your own project by pointing at the workspace or by publishing them to crates.io.
 
-```julia
-# Get interesting quantities
-μ = mean(x)
-σ_marginal = std(x)
-samp = rand(x)  # Sample
-Q = precision_map(x)  # Sparse precision matrix
+## Examples
 
-# Form posterior under point observations using new helpers
-using Distributions: Normal
-obs_model = PointEvaluationObsModel(model.discretization, points, Normal)
-y = [0.83, 0.12, 0.45, -0.21]
-obs_likelihood = obs_model(y; σ = 0.1)
-x_cond = gaussian_approximation(x, obs_likelihood)  # Posterior GMRF!
+Construct a simple precision matrix from a graph and evaluate a log density:
+
+```rust
+use gmrf_core::{GaussianMarkovRandomField, WeightedGraph};
+use nalgebra::DVector;
+
+let mut graph = WeightedGraph::new(3);
+graph.add_edge(0, 1, 1.0);
+graph.add_edge(1, 2, 2.0);
+let (mean, precision) = graph.as_gmrf(1e-3);
+let gmrf = GaussianMarkovRandomField::new(mean, precision).unwrap();
+
+let x = DVector::from_vec(vec![0.1, -0.2, 0.3]);
+let log_p = gmrf.log_density(&x).unwrap();
+println!("log p(x) = {}", log_p);
 ```
 
-Make sure to check the documentation for further examples!
+Apply a linear observation to condition the prior:
 
-## Contributing
+```rust
+use gmrf_observation::{LinearGaussianObservation, ObservationModel};
+use nalgebra::{DMatrix, DVector};
 
-Check our [contribution guidelines](./CONTRIBUTING.md).
+let observation = LinearGaussianObservation {
+    operator: DMatrix::from_row_slice(1, 3, &[1.0, 0.0, 1.0]),
+    observation: DVector::from_vec(vec![0.25]),
+    noise: DMatrix::identity(1, 1) * 0.1,
+};
+let posterior = observation.condition(&gmrf).unwrap();
+println!("posterior precision: {}", posterior.precision());
+```
+
+Build a simple AR(1) latent field prior with the latent crate:
+
+```rust
+use gmrf_latent::ar1_field;
+
+let prior = ar1_field(8, 0.6, 2.0).unwrap();
+println!("latent precision shape: {}x{}", prior.precision().nrows(), prior.precision().ncols());
+```
+
+## License
+
+The project retains the original MIT license.

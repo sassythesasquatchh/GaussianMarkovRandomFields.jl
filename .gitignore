@@ -1,5 +1,14 @@
+# Rust artifacts
+/target
+Cargo.lock
+
+# macOS
+.DS_Store
+
+# Legacy Julia coverage artifacts
 *.jl.*.cov
 *.jl.cov
 *.jl.mem
-Manifest.toml
-.DS_Store
+
+# Documentation artifacts
+docs/node_modules
