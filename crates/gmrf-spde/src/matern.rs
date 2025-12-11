@@ -118,7 +118,7 @@ pub fn smoothness_to_nu(smoothness: u32, dimension: u32) -> Result<f64, SpdeErro
     }
 }
 
-fn variance_scaling(nu: f64, kappa: f64, sigma2_goal: f64) -> f64 {
+pub(crate) fn variance_scaling(nu: f64, kappa: f64, sigma2_goal: f64) -> f64 {
     if nu <= 0.0 {
         return 1.0;
     }
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn discretize_builds_precision() {
         let mesh = unit_square_mesh();
-        let fem = FemDiscretization2d::new(mesh, None, None).unwrap();
+        let fem = FemDiscretization2d::new(mesh, None, None, None).unwrap();
         let spde = MaternSpde2d::from_kappa_nu(1.0, 1.0, 1.0, None).unwrap();
         let gmrf = spde.discretize(&fem).unwrap();
         assert_eq!(gmrf.dimension(), fem.dimension());
@@ -221,9 +221,10 @@ mod tests {
     #[test]
     fn diffusion_factor_changes_precision() {
         let mesh = unit_square_mesh();
-        let fem_iso = FemDiscretization2d::new(mesh.clone(), None, None).unwrap();
+        let fem_iso = FemDiscretization2d::new(mesh.clone(), None, None, None).unwrap();
         let fem_scaled =
-            FemDiscretization2d::new(mesh, None, Some(Matrix2::new(3.0, 0.0, 0.0, 3.0))).unwrap();
+            FemDiscretization2d::new(mesh, None, Some(Matrix2::new(3.0, 0.0, 0.0, 3.0)), None)
+                .unwrap();
         let spde = MaternSpde2d::from_kappa_nu(1.0, 1.0, 1.0, None).unwrap();
         let p_iso = spde.precision_matrix(&fem_iso).unwrap();
         let p_scaled = spde.precision_matrix(&fem_scaled).unwrap();

@@ -33,7 +33,7 @@ fn unit_square_mesh() -> Mesh2d {
 #[test]
 fn matern_spde_pipeline_produces_valid_precision_and_samples() {
     let mesh = unit_square_mesh();
-    let fem = FemDiscretization2d::new(mesh, None, None).expect("assemble FEM data");
+    let fem = FemDiscretization2d::new(mesh, None, None, None).expect("assemble FEM data");
     let spde = MaternSpde2d::from_range_and_smoothness(0.8, 1, 1.0, None)
         .expect("valid Matérn parameters");
 

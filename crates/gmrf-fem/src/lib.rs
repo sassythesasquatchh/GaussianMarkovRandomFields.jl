@@ -13,7 +13,8 @@ pub mod mesh;
 pub mod quadrature;
 
 pub use assembly::{
-    assemble_mass_matrix, assemble_stiffness_matrix, assemble_stiffness_matrix_with_diffusion,
+    assemble_advection_matrix, assemble_mass_matrix, assemble_stiffness_matrix,
+    assemble_stiffness_matrix_with_diffusion, assemble_streamline_diffusion_matrix,
     lumped_mass_vector,
 };
 pub use errors::FemError;

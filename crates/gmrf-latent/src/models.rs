@@ -92,6 +92,32 @@ pub fn rw1(length: usize, tau: f64) -> Result<Gmrf, LatentModelError> {
     build_gmrf(Vector::zeros(length), SparseMatrix::from(&coo))
 }
 
+/// First-order random walk on a ring graph (periodic boundary conditions).
+pub fn cyclic_rw1(length: usize, tau: f64) -> Result<Gmrf, LatentModelError> {
+    if length < 3 {
+        return Err(LatentModelError::InvalidParameters(
+            "Cyclic RW1 requires at least three nodes",
+        ));
+    }
+    if !(tau.is_finite() && tau > 0.0) {
+        return Err(LatentModelError::InvalidParameters(
+            "precision must be positive",
+        ));
+    }
+
+    let mut coo = CooMatrix::new(length, length);
+    for i in 0..length {
+        let j_next = (i + 1) % length;
+        let j_prev = (i + length - 1) % length;
+        coo.push(i, i, 2.0 * tau);
+        let val = -tau;
+        coo.push(i, j_next, val);
+        coo.push(i, j_prev, val);
+    }
+
+    build_gmrf(Vector::zeros(length), SparseMatrix::from(&coo))
+}
+
 /// Intrinsic Besag model using an undirected neighbor graph.
 pub fn besag(neighborhood: &Neighborhood, tau: f64) -> Result<Gmrf, LatentModelError> {
     if !(tau.is_finite() && tau > 0.0) {
@@ -179,6 +205,11 @@ pub fn separable_kronecker(a: &Gmrf, b: &Gmrf) -> Result<Gmrf, LatentModelError>
     }
 
     build_gmrf(Vector::zeros(na * nb), SparseMatrix::from(&coo))
+}
+
+/// Convenience wrapper for space-time separable kernels (Q_time ⊗ Q_space).
+pub fn separable_spatiotemporal(temporal: &Gmrf, spatial: &Gmrf) -> Result<Gmrf, LatentModelError> {
+    separable_kronecker(temporal, spatial)
 }
 
 /// Fixed-effect helper that pins coefficients tightly around provided values.
@@ -294,6 +325,19 @@ mod tests {
     }
 
     #[test]
+    fn cyclic_random_walk_wraps_edges() {
+        let gmrf = cyclic_rw1(4, 1.0).unwrap();
+        let q = gmrf.precision().as_matrix().unwrap();
+        let mut wrap = 0.0;
+        for (i, j, v) in q.triplet_iter() {
+            if (i == 0 && j == 3) || (i == 3 && j == 0) {
+                wrap = *v;
+            }
+        }
+        assert!((wrap + 1.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn block_diagonal_combination_concatenates_means() {
         let a = iid_gaussian(1, 1.0).unwrap();
         let b = iid_gaussian(2, 1.0).unwrap();
@@ -309,6 +353,14 @@ mod tests {
         let b = rw1(2, 1.0).unwrap();
         let sep = separable_kronecker(&a, &b).unwrap();
         assert_eq!(sep.dimension(), 4);
+    }
+
+    #[test]
+    fn separable_spatiotemporal_aliases_kronecker() {
+        let temporal = ar1_chain(2, 0.1, 1.0).unwrap();
+        let spatial = iid_gaussian(3, 2.0).unwrap();
+        let sep = separable_spatiotemporal(&temporal, &spatial).unwrap();
+        assert_eq!(sep.dimension(), 6);
     }
 
     #[test]

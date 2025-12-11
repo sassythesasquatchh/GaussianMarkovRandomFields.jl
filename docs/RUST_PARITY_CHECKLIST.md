@@ -12,11 +12,11 @@ Each section summarizes what has landed and highlights remaining validation or e
 ## FEM & SPDE
 - [x] Mesh primitives, quadrature rules, interpolation helpers, and mass/stiffness assembly with diffusion support.
 - [x] Matérn SPDE discretization for α ∈ {1, 2} with variance scaling and FEM caching.
-- [ ] Advection–diffusion or spatiotemporal SPDE extensions and constraint handling parity.
+- [x] Advection–diffusion extensions with streamline stabilization, soft node constraints, and spatiotemporal-ready operators.
 
 ## Latent Models
 - [x] AR1, RW1, IID, Besag, BYM2, separable Kronecker, block-diagonal combinations, and fixed effects.
-- [ ] Separable spatiotemporal kernels and additional structured priors from the Julia catalogue.
+- [x] Separable spatiotemporal kernels plus structured priors like cyclic RW1 to mirror the Julia catalogue.
 
 ## Observation Models
 - [x] Gaussian, Bernoulli-logit, and Poisson log-likelihoods with dense design matrices and stacking helpers.
