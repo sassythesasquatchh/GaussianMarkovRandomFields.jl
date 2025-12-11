@@ -1,20 +1,16 @@
 [package]
-name = "gmrf-observation"
+name = "gmrf-spde"
 version = "0.1.0"
 edition = "2021"
 authors = ["GaussianMarkovRandomFields.jl contributors"]
 license = "MIT"
-description = "Observation model scaffolding for the Rust port of GaussianMarkovRandomFields.jl"
+description = "SPDE discretizations for the Rust port of GaussianMarkovRandomFields.jl"
 repository = "https://github.com/JuliaGaussianProcesses/GaussianMarkovRandomFields.jl"
 
 [dependencies]
 gmrf-core = { path = "../gmrf-core" }
+gmrf-fem = { path = "../gmrf-fem" }
 nalgebra.workspace = true
+nalgebra-sparse.workspace = true
+statrs = "0.16"
 thiserror.workspace = true
-
-[features]
-autodiff = ["gmrf-autodiff"]
-
-[dependencies.gmrf-autodiff]
-path = "../gmrf-autodiff"
-optional = true
