@@ -5,9 +5,13 @@
 //! utilities that will be shared across FEM, observation, and visualization crates.
 
 pub mod gmrf;
+pub mod linear;
 pub mod precision;
+pub mod solver;
 pub mod types;
 
-pub use gmrf::{Gmrf, SolverCache};
+pub use gmrf::Gmrf;
+pub use linear::{ComposedOperator, LinearOperator, MatrixOperator};
 pub use precision::{PrecisionOperator, PrecisionStorage};
+pub use solver::{JacobiPreconditioner, Solver, SolverAlgorithm, SolverConfig};
 pub use types::{GmrfError, SparseMatrix, Vector};

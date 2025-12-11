@@ -1,0 +1,16 @@
+[package]
+name = "gmrf-viz"
+version = "0.1.0"
+edition = "2021"
+authors = ["GaussianMarkovRandomFields.jl contributors"]
+description = "Optional visualization helpers for GaussianMarkovRandomFields.jl Rust port"
+license = "MIT"
+
+[dependencies]
+gmrf-fem = { path = "../gmrf-fem" }
+gmrf-core = { path = "../gmrf-core" }
+plotters = { version = "0.3", default-features = false, features = ["svg_backend"] }
+thiserror = "1.0"
+
+[dev-dependencies]
+tempfile = "3.8"

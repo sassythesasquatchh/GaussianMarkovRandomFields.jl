@@ -5,42 +5,18 @@
 //! available, while RBMC-style variance estimation leverages Hutchinson probes as a fallback.
 
 use crate::precision::PrecisionStorage;
+use crate::solver::{Solver, SolverConfig};
 use crate::types::{GmrfError, SparseMatrix, Vector};
-use nalgebra::{Cholesky, DMatrix};
+use nalgebra::DMatrix;
 use rand::Rng;
 use rand_distr::StandardNormal;
-
-/// Cholesky cache mirroring `LinearSolve` reuse in Julia.
-#[derive(Debug, Default)]
-pub struct SolverCache {
-    factor: Option<Cholesky<f64, nalgebra::Dynamic>>, // Cached dense Cholesky for now.
-}
-
-impl SolverCache {
-    fn factorize(&mut self, precision: &SparseMatrix) -> Result<(), GmrfError> {
-        if self.factor.is_some() {
-            return Ok(());
-        }
-
-        let dense: DMatrix<f64> = DMatrix::from(precision); // convert sparse -> dense
-        let cholesky = dense.cholesky().ok_or(GmrfError::NonPositiveDefinite)?;
-        self.factor = Some(cholesky);
-        Ok(())
-    }
-
-    fn solve(&mut self, precision: &SparseMatrix, rhs: &Vector) -> Result<Vector, GmrfError> {
-        self.factorize(precision)?;
-        let factor = self.factor.as_ref().expect("factorization populated");
-        Ok(factor.solve(rhs))
-    }
-}
 
 /// Gaussian Markov Random Field with precision representation and solver cache.
 pub struct Gmrf {
     mean: Vector,
     precision: PrecisionStorage,
     q_sqrt: Option<SparseMatrix>,
-    cache: SolverCache,
+    solver: Solver,
 }
 
 impl Gmrf {
@@ -60,7 +36,7 @@ impl Gmrf {
             mean,
             precision: PrecisionStorage::Matrix(precision),
             q_sqrt: None,
-            cache: SolverCache::default(),
+            solver: Solver::default(),
         })
     }
 
@@ -77,14 +53,14 @@ impl Gmrf {
             ));
         }
 
-        let mut cache = SolverCache::default();
-        let mean = cache.solve(&precision, &information)?;
+        let mut solver = Solver::default();
+        let mean = solver.solve_matrix(&precision, &information)?;
 
         Ok(Self {
             mean,
             precision: PrecisionStorage::Matrix(precision),
             q_sqrt: None,
-            cache,
+            solver,
         })
     }
 
@@ -97,22 +73,25 @@ impl Gmrf {
         assert_eq!(
             mean.len(),
             dimension,
-            "mean length must match operator dimension"
+            "mean length must match operator dimension",
         );
         Self {
             mean,
-            precision: PrecisionStorage::Operator {
-                dimension,
-                operator,
-            },
+            precision: PrecisionStorage::Operator(operator),
             q_sqrt: None,
-            cache: SolverCache::default(),
+            solver: Solver::default(),
         }
     }
 
     /// Provide a precision square root to enable sampling without factorizing Q.
     pub fn with_precision_sqrt(mut self, q_sqrt: SparseMatrix) -> Self {
         self.q_sqrt = Some(q_sqrt);
+        self
+    }
+
+    /// Configure the solver to switch between direct and iterative algorithms.
+    pub fn with_solver_config(mut self, config: SolverConfig) -> Self {
+        self.solver = Solver::new(config);
         self
     }
 
@@ -126,20 +105,29 @@ impl Gmrf {
         &self.mean
     }
 
+    /// Access the underlying precision storage (matrix or operator).
+    pub fn precision(&self) -> &PrecisionStorage {
+        &self.precision
+    }
+
     /// Generate a sample by solving `Q x = z` where `z ~ N(0, I)`, yielding covariance `Q^{-1}`.
     pub fn sample<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Result<Vector, GmrfError> {
         if let Some(q_sqrt) = &self.q_sqrt {
             return self.sample_with_sqrt(q_sqrt, rng);
         }
 
-        let precision = self
-            .precision
-            .as_matrix()
-            .ok_or(GmrfError::MissingPrecisionMatrix)?;
-
-        let noise = Vector::from_fn(self.dimension(), |_, _| rng.sample(StandardNormal));
-        let draw = self.cache.solve(precision, &noise)?;
-        Ok(&self.mean + draw)
+        match &self.precision {
+            PrecisionStorage::Matrix(precision) => {
+                let noise = Vector::from_fn(self.dimension(), |_, _| rng.sample(StandardNormal));
+                let draw = self.solver.solve_matrix(precision, &noise)?;
+                Ok(&self.mean + draw)
+            }
+            PrecisionStorage::Operator(operator) => {
+                let noise = Vector::from_fn(self.dimension(), |_, _| rng.sample(StandardNormal));
+                let draw = self.solver.solve_operator(operator.as_ref(), &noise)?;
+                Ok(&self.mean + draw)
+            }
+        }
     }
 
     fn sample_with_sqrt<R: Rng + ?Sized>(
@@ -163,17 +151,12 @@ impl Gmrf {
 
     /// Solve `Q x = rhs` using cached factorization when possible.
     pub fn solve_precision(&mut self, rhs: &Vector) -> Result<Vector, GmrfError> {
-        let precision = self
-            .precision
-            .as_matrix()
-            .ok_or(GmrfError::MissingPrecisionMatrix)?;
-        if rhs.len() != precision.nrows() {
-            return Err(GmrfError::DimensionMismatch(
-                "right hand side length must match precision dimension",
-            ));
+        match &self.precision {
+            PrecisionStorage::Matrix(precision) => self.solver.solve_matrix(precision, rhs),
+            PrecisionStorage::Operator(operator) => {
+                self.solver.solve_operator(operator.as_ref(), rhs)
+            }
         }
-
-        self.cache.solve(precision, rhs)
     }
 
     /// Approximate marginal variances via Hutchinson-type randomized estimates (RBMC fallback).
