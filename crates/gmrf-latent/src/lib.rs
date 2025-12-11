@@ -12,6 +12,6 @@ pub mod models;
 pub use errors::LatentModelError;
 pub use graph::Neighborhood;
 pub use models::{
-    ar1_chain, besag, bym2, combine_block_diagonal, fixed_effect, iid_gaussian, rw1,
-    separable_kronecker,
+    ar1_chain, besag, bym2, combine_block_diagonal, cyclic_rw1, fixed_effect, iid_gaussian, rw1,
+    separable_kronecker, separable_spatiotemporal,
 };

@@ -5,10 +5,12 @@
 //! intentionally lightweight so additional SPDEs (advection–diffusion, temporal
 //! extensions) can follow the same patterns.
 
+pub mod advection;
 pub mod discretization;
 pub mod errors;
 pub mod matern;
 
+pub use advection::AdvectionDiffusionSpde2d;
 pub use discretization::FemDiscretization2d;
 pub use errors::SpdeError;
 pub use matern::{range_to_kappa, smoothness_to_nu, MaternSpde2d};
