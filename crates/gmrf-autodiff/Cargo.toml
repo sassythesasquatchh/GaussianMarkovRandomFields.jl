@@ -1,17 +1,13 @@
 [package]
-name = "gmrf-fem"
+name = "gmrf-autodiff"
 version = "0.1.0"
 edition = "2021"
 authors = ["GaussianMarkovRandomFields.jl contributors"]
 license = "MIT"
-description = "Finite element scaffolding for the Rust port of GaussianMarkovRandomFields.jl"
+description = "Automatic differentiation helpers for the Rust port of GaussianMarkovRandomFields.jl"
 repository = "https://github.com/JuliaGaussianProcesses/GaussianMarkovRandomFields.jl"
 
 [dependencies]
 gmrf-core = { path = "../gmrf-core" }
-nalgebra.workspace = true
-thiserror.workspace = true
-nalgebra-sparse.workspace = true
-
-[dev-dependencies]
-tempfile = "3"
+nalgebra = { workspace = true }
+thiserror = { workspace = true }

@@ -1,7 +1,26 @@
-//! Placeholder crate for observation model abstractions.
+//! Observation model scaffolding for the Rust port of `GaussianMarkovRandomFields.jl`.
 //!
-//! Observation likelihoods and transforms will follow the Julia `ObservationModel` APIs. For now we
-//! keep this crate minimal so the Cargo workspace mirrors the porting roadmap while core pieces are
-//! built out in `gmrf-core`.
+//! This crate mirrors the Julia `ObservationModel` abstractions, providing common
+//! exponential-family likelihoods, linear/FEM-style transforms, and composition
+//! helpers so observation sets can be combined before conditioning a `GMRF`.
+
+#[cfg(feature = "autodiff")]
+pub mod autodiff;
+pub mod builder;
+pub mod errors;
+pub mod models;
+pub mod transform;
+
+#[cfg(feature = "autodiff")]
+pub use autodiff::DifferentiableObservation;
+pub use builder::ObservationBuilder;
+pub use errors::ObservationError;
+pub use models::{
+    BernoulliLogitObservation, GaussianObservation, ObservationModel, PoissonLogObservation,
+    StackedObservations,
+};
+#[cfg(feature = "autodiff")]
+pub use transform::DifferentiableTransform;
+pub use transform::{ComposedTransform, IdentityTransform, LinearTransform, ObservationTransform};
 
 pub use gmrf_core as core;
