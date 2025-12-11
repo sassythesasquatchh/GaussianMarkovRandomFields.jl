@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "crates/gmrf-core",
+    "crates/gmrf-fem",
+    "crates/gmrf-observation",
+]
+resolver = "2"
+
+[workspace.package]
+authors = ["GaussianMarkovRandomFields.jl contributors"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/JuliaGaussianProcesses/GaussianMarkovRandomFields.jl"
+
+[workspace.dependencies]
+nalgebra = { version = "0.32", default-features = true }
+nalgebra-sparse = "0.9"
+rand = "0.8"
+rand_distr = "0.4"
+thiserror = "1.0"

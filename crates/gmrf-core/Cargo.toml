@@ -1,0 +1,15 @@
+[package]
+name = "gmrf-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["GaussianMarkovRandomFields.jl contributors"]
+license = "MIT"
+description = "Core Gaussian Markov Random Field types and solvers for the Rust port of GaussianMarkovRandomFields.jl"
+repository = "https://github.com/JuliaGaussianProcesses/GaussianMarkovRandomFields.jl"
+
+[dependencies]
+nalgebra = { workspace = true }
+nalgebra-sparse = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+thiserror = { workspace = true }
