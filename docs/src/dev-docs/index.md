@@ -3,6 +3,7 @@
 Pages = [
     "spdes.md",
     "discretizations.md",
-    "solvers.md"
+    "solvers.md",
+    "observation_models.md",
 ]
 ```

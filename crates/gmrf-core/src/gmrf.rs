@@ -8,6 +8,9 @@ use crate::precision::PrecisionStorage;
 use crate::solver::{Solver, SolverConfig};
 use crate::types::{GmrfError, SparseMatrix, Vector};
 use nalgebra::DMatrix;
+use nalgebra_sparse::ops::serial::spsolve_csc_lower_triangular;
+use nalgebra_sparse::ops::Op;
+use nalgebra_sparse::CscMatrix;
 use rand::Rng;
 use rand_distr::StandardNormal;
 
@@ -100,6 +103,20 @@ impl Gmrf {
         self.precision.dimension()
     }
 
+    /// Borrow the mean vector.
+    pub fn mean_vector(&self) -> &Vector {
+        &self.mean
+    }
+
+    /// Access the concrete precision matrix when available.
+    /// Returns `None` when the precision is provided as a matrix-free operator.
+    pub fn precision_matrix(&self) -> Option<&SparseMatrix> {
+        match &self.precision {
+            PrecisionStorage::Matrix(mat) => Some(mat),
+            PrecisionStorage::Operator(_) => None,
+        }
+    }
+
     /// Mean accessor.
     pub fn mean(&self) -> &Vector {
         &self.mean
@@ -142,10 +159,17 @@ impl Gmrf {
             ));
         }
 
-        let dense: DMatrix<f64> = DMatrix::from(q_sqrt);
+        // Interpret q_sqrt as a lower-triangular square root (e.g., Cholesky factor L).
+        // We solve Lᵀ x = z with a sparse triangular solve to sample from Q⁻¹.
+        let csc: CscMatrix<f64> = CscMatrix::from(q_sqrt);
         let noise = Vector::from_fn(dimension, |_, _| rng.sample(StandardNormal));
-        let lu = dense.transpose().lu();
-        let solved = lu.solve(&noise).ok_or(GmrfError::NonPositiveDefinite)?;
+        let mut rhs = DMatrix::from_column_slice(dimension, 1, noise.as_slice());
+        spsolve_csc_lower_triangular(
+            Op::Transpose(&csc),
+            rhs.view_mut((0, 0), (dimension, 1)),
+        )
+            .map_err(|_| GmrfError::NonPositiveDefinite)?;
+        let solved = rhs.column(0).into_owned();
         Ok(&self.mean + solved)
     }
 
@@ -186,8 +210,11 @@ impl Gmrf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nalgebra::DMatrix;
     use nalgebra_sparse::CooMatrix;
     use rand::thread_rng;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
 
     fn identity_precision(size: usize) -> SparseMatrix {
         let mut coo = CooMatrix::new(size, size);
@@ -226,5 +253,37 @@ mod tests {
         let variances = gmrf.rbmc_variances(32, &mut rng).unwrap();
         assert_eq!(variances.len(), 1);
         assert!(variances[0] > 0.0);
+    }
+
+    #[test]
+    fn sampling_with_precision_sqrt_matches_dense_solve() {
+        let dim = 3;
+        let mut coo = CooMatrix::new(dim, dim);
+        coo.push(0, 0, 2.0);
+        coo.push(1, 0, -0.5);
+        coo.push(1, 1, 1.5);
+        coo.push(2, 0, 0.25);
+        coo.push(2, 1, -0.3);
+        coo.push(2, 2, 1.2);
+        let q_sqrt = SparseMatrix::from(&coo);
+
+        let mean = Vector::zeros(dim);
+        let mut gmrf = Gmrf::from_mean_and_precision(mean, identity_precision(dim))
+            .unwrap()
+            .with_precision_sqrt(q_sqrt.clone());
+
+        let mut rng = StdRng::seed_from_u64(123);
+        let mut rng_expected = rng.clone();
+        let noise = Vector::from_fn(dim, |_, _| rng_expected.sample(StandardNormal));
+
+        let dense_l: DMatrix<f64> = DMatrix::from(&q_sqrt);
+        let expected = dense_l
+            .transpose()
+            .lu()
+            .solve(&noise)
+            .expect("dense solve should succeed");
+
+        let sample = gmrf.sample(&mut rng).unwrap();
+        assert!((sample - expected).norm() < 1e-10);
     }
 }

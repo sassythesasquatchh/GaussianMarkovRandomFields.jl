@@ -6,6 +6,8 @@
 
 #[cfg(feature = "autodiff")]
 pub mod autodiff;
+#[cfg(feature = "autodiff")]
+pub mod gaussian_approximation;
 pub mod builder;
 pub mod errors;
 pub mod models;
@@ -13,6 +15,8 @@ pub mod transform;
 
 #[cfg(feature = "autodiff")]
 pub use autodiff::DifferentiableObservation;
+#[cfg(feature = "autodiff")]
+pub use gaussian_approximation::{gaussian_approximation, GaussianApproximationError, LaplacePosterior};
 pub use builder::ObservationBuilder;
 pub use errors::ObservationError;
 pub use models::{

@@ -31,7 +31,7 @@ This document summarizes the existing Julia package and outlines an incremental 
 
 2. **Linear operators & solvers**
    - Introduce linear map traits mirroring `LinearMaps` to allow matrix-free precision operators and compositions.
-   - Implement solver configuration analogous to `configure_algorithm`/`prepare_for_linsolve`, supporting both direct (Cholesky/LDLᵀ via `sprs`/`pardiso`) and iterative methods; cache factorizations for repeated solves.
+   - Implement solver configuration analogous to `configure_algorithm`/`prepare_for_linsolve`, supporting both direct (sparse Cholesky/LDLᵀ via `nalgebra-sparse` or external backends like `sprs`/`pardiso`) and iterative methods; cache factorizations for repeated solves.
    - Provide preconditioners (diagonal/Jacobi, incomplete factorizations where available) and selected-inversion alternatives or approximations for marginal variance extraction.
 
 3. **Mesh handling & FEM scaffolding**

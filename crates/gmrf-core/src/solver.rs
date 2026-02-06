@@ -6,7 +6,10 @@
 
 use crate::linear::{LinearOperator, MatrixOperator};
 use crate::types::{GmrfError, SparseMatrix, Vector};
-use nalgebra::{Cholesky, Dyn};
+use nalgebra::{Cholesky, DMatrix, Dyn};
+use nalgebra_sparse::factorization::CscCholesky;
+use nalgebra_sparse::pattern::SparsityPattern;
+use nalgebra_sparse::CscMatrix;
 use rand::Rng;
 use rand_distr::StandardNormal;
 
@@ -15,6 +18,8 @@ use rand_distr::StandardNormal;
 pub enum DirectBackend {
     /// Dense Cholesky factorization used as a placeholder until sparse factorizations land.
     DenseCholesky,
+    /// Sparse Cholesky factorization using CSC storage (nalgebra-sparse).
+    SparseCholesky,
 }
 
 /// Available iterative solver flavors.
@@ -63,6 +68,10 @@ impl Default for SolverConfig {
 pub struct SolverCache {
     cholesky: Option<Cholesky<f64, Dyn>>, // placeholder until sparse Cholesky is wired in
     dimension: Option<usize>,
+    sparse_cholesky: Option<CscCholesky<f64>>,
+    sparse_pattern: Option<SparsityPattern>,
+    sparse_dimension: Option<usize>,
+    sparse_matrix_ptr: Option<*const SparseMatrix>,
 }
 
 impl SolverCache {
@@ -80,10 +89,143 @@ impl SolverCache {
         Ok(())
     }
 
+    fn cholesky(&mut self, precision: &SparseMatrix) -> Result<&Cholesky<f64, Dyn>, GmrfError> {
+        self.factorize_dense(precision)?;
+        Ok(self.cholesky.as_ref().expect("factorization populated"))
+    }
+
     fn solve_dense(&mut self, precision: &SparseMatrix, rhs: &Vector) -> Result<Vector, GmrfError> {
         self.factorize_dense(precision)?;
         let factor = self.cholesky.as_ref().expect("factorization populated");
         Ok(factor.solve(rhs))
+    }
+
+    fn logdet_precision_dense(&mut self, precision: &SparseMatrix) -> Result<f64, GmrfError> {
+        let cho = self.cholesky(precision)?;
+        // For SPD matrices, logdet(A) = 2 * sum(log(diag(L)))
+        let l = cho.l();
+        let mut acc = 0.0;
+        for i in 0..l.nrows() {
+            let diag = l[(i, i)];
+            if diag <= 0.0 {
+                return Err(GmrfError::NonPositiveDefinite);
+            }
+            acc += diag.ln();
+        }
+        Ok(2.0 * acc)
+    }
+
+    fn inverse_diag_dense(&mut self, precision: &SparseMatrix) -> Result<Vector, GmrfError> {
+        let cho = self.cholesky(precision)?;
+        let l = cho.l();
+        let n = l.nrows();
+        let mut diag = Vector::zeros(n);
+
+        // For each unit basis vector e_i, solve L y = e_i, then (A^{-1})_{ii} = ||y||^2
+        for i in 0..n {
+            let mut e = Vector::zeros(n);
+            e[i] = 1.0;
+
+            // Forward solve using the lower-triangular factor
+            let mut y = e.clone();
+            for row in 0..n {
+                let mut sum = y[row];
+                for col in 0..row {
+                    sum -= l[(row, col)] * y[col];
+                }
+                let diag_entry = l[(row, row)];
+                if diag_entry.abs() < f64::EPSILON {
+                    return Err(GmrfError::NonPositiveDefinite);
+                }
+                y[row] = sum / diag_entry;
+            }
+
+            diag[i] = y.dot(&y);
+        }
+
+        Ok(diag)
+    }
+
+    fn factorize_sparse(&mut self, precision: &SparseMatrix) -> Result<(), GmrfError> {
+        let current_ptr = precision as *const SparseMatrix;
+        if let (Some(ptr), Some(_chol), Some(dim)) = (
+            self.sparse_matrix_ptr,
+            &self.sparse_cholesky,
+            self.sparse_dimension,
+        ) {
+            if ptr == current_ptr && dim == precision.nrows() {
+                return Ok(());
+            }
+        }
+
+        let csc: CscMatrix<f64> = CscMatrix::from(precision);
+        let pattern = csc.pattern().clone();
+        if let (Some(cached_pattern), Some(chol)) =
+            (&self.sparse_pattern, self.sparse_cholesky.as_mut())
+        {
+            if cached_pattern == &pattern {
+                chol.refactor(csc.values())
+                    .map_err(|_| GmrfError::NonPositiveDefinite)?;
+                self.sparse_dimension = Some(csc.nrows());
+                self.sparse_matrix_ptr = Some(current_ptr);
+                return Ok(());
+            }
+        }
+
+        let chol = CscCholesky::factor(&csc).map_err(|_| GmrfError::NonPositiveDefinite)?;
+        self.sparse_cholesky = Some(chol);
+        self.sparse_pattern = Some(pattern);
+        self.sparse_dimension = Some(csc.nrows());
+        self.sparse_matrix_ptr = Some(current_ptr);
+        Ok(())
+    }
+
+    fn sparse_cholesky(
+        &mut self,
+        precision: &SparseMatrix,
+    ) -> Result<&CscCholesky<f64>, GmrfError> {
+        self.factorize_sparse(precision)?;
+        Ok(self
+            .sparse_cholesky
+            .as_ref()
+            .expect("sparse factorization populated"))
+    }
+
+    fn solve_sparse(&mut self, precision: &SparseMatrix, rhs: &Vector) -> Result<Vector, GmrfError> {
+        let factor = self.sparse_cholesky(precision)?;
+        let rhs_mat = DMatrix::from_column_slice(rhs.len(), 1, rhs.as_slice());
+        let solved = factor.solve(&rhs_mat);
+        Ok(solved.column(0).into_owned())
+    }
+
+    fn logdet_precision_sparse(&mut self, precision: &SparseMatrix) -> Result<f64, GmrfError> {
+        let factor = self.sparse_cholesky(precision)?;
+        let l = factor.l();
+        let mut acc = 0.0;
+        for i in 0..l.nrows() {
+            let diag = l
+                .get_entry(i, i)
+                .map(|entry| entry.into_value())
+                .unwrap_or(0.0);
+            if diag <= 0.0 {
+                return Err(GmrfError::NonPositiveDefinite);
+            }
+            acc += diag.ln();
+        }
+        Ok(2.0 * acc)
+    }
+
+    fn inverse_diag_sparse(&mut self, precision: &SparseMatrix) -> Result<Vector, GmrfError> {
+        let factor = self.sparse_cholesky(precision)?;
+        let n = precision.nrows();
+        let mut diag = Vector::zeros(n);
+        for i in 0..n {
+            let mut rhs = DMatrix::zeros(n, 1);
+            rhs[(i, 0)] = 1.0;
+            let solved = factor.solve(&rhs);
+            diag[i] = solved[(i, 0)];
+        }
+        Ok(diag)
     }
 }
 
@@ -176,6 +318,9 @@ impl Solver {
             SolverAlgorithm::Direct(DirectBackend::DenseCholesky) => {
                 self.cache.solve_dense(precision, rhs)
             }
+            SolverAlgorithm::Direct(DirectBackend::SparseCholesky) => {
+                self.cache.solve_sparse(precision, rhs)
+            }
             SolverAlgorithm::Iterative(method) => {
                 let operator = MatrixOperator::new(precision.clone());
                 let preconditioner = match self.config.preconditioner {
@@ -254,6 +399,30 @@ impl Solver {
 
         Ok(estimates / num_probes as f64)
     }
+
+    /// Compute log(det(Σ)) where Σ = Q^{-1}. Mirrors Julia's `logdet_cov` helper.
+    pub fn logdet_covariance(&mut self, precision: &SparseMatrix) -> Result<f64, GmrfError> {
+        let logdet_q = match self.config.algorithm {
+            SolverAlgorithm::Direct(DirectBackend::SparseCholesky) => {
+                self.cache.logdet_precision_sparse(precision)?
+            }
+            _ => self.cache.logdet_precision_dense(precision)?,
+        };
+        Ok(-logdet_q)
+    }
+
+    /// Compute the diagonal of Q^{-1} using the cached Cholesky factor (selected inversion analogue).
+    pub fn selected_inverse_diag(
+        &mut self,
+        precision: &SparseMatrix,
+    ) -> Result<Vector, GmrfError> {
+        match self.config.algorithm {
+            SolverAlgorithm::Direct(DirectBackend::SparseCholesky) => {
+                self.cache.inverse_diag_sparse(precision)
+            }
+            _ => self.cache.inverse_diag_dense(precision),
+        }
+    }
 }
 
 fn conjugate_gradient(
@@ -325,6 +494,20 @@ mod tests {
     }
 
     #[test]
+    fn sparse_direct_solver_reuses_factor() {
+        let precision = identity_precision(3);
+        let rhs = Vector::from_vec(vec![1.0, -1.0, 0.5]);
+        let mut solver = Solver::new(SolverConfig {
+            algorithm: SolverAlgorithm::Direct(DirectBackend::SparseCholesky),
+            ..Default::default()
+        });
+        let first = solver.solve_matrix(&precision, &rhs).unwrap();
+        let second = solver.solve_matrix(&precision, &rhs).unwrap();
+        assert_eq!(first, second);
+        assert!(solver.cache.sparse_cholesky.is_some());
+    }
+
+    #[test]
     fn conjugate_gradient_converges_on_operator() {
         struct IdentityOp;
         impl LinearOperator for IdentityOp {
@@ -365,5 +548,25 @@ mod tests {
             .unwrap();
         assert_eq!(variances.len(), 1);
         assert!(variances[0].is_finite());
+    }
+
+    #[test]
+    fn logdet_covariance_matches_identity() {
+        let precision = identity_precision(3);
+        let mut solver = Solver::default();
+        let logdet = solver.logdet_covariance(&precision).unwrap();
+        // For identity precision, covariance is identity, logdet = 0
+        assert!(logdet.abs() < 1e-12);
+    }
+
+    #[test]
+    fn selected_inverse_diag_matches_identity() {
+        let precision = identity_precision(4);
+        let mut solver = Solver::default();
+        let diag = solver.selected_inverse_diag(&precision).unwrap();
+        assert_eq!(diag.len(), 4);
+        for v in diag.iter() {
+            assert!((*v - 1.0).abs() < 1e-12);
+        }
     }
 }

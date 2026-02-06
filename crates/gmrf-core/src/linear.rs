@@ -6,6 +6,7 @@
 //! a particular backend.
 
 use crate::types::{GmrfError, SparseMatrix, Vector};
+use nalgebra::DMatrix;
 
 /// A trait representing a generic linear operator `y = A * x`.
 pub trait LinearOperator: Send + Sync {
@@ -65,5 +66,84 @@ impl<A: LinearOperator, B: LinearOperator> LinearOperator for ComposedOperator<A
     fn apply(&self, x: &Vector) -> Result<Vector, GmrfError> {
         let intermediate = self.first.apply(x)?;
         self.second.apply(&intermediate)
+    }
+}
+
+/// Linear operator paired with a known square root operator, mirroring Julia's `LinearMapWithSqrt`.
+pub struct OperatorWithSqrt<O: LinearOperator, S: LinearOperator> {
+    operator: O,
+    sqrt: S,
+}
+
+impl<O: LinearOperator, S: LinearOperator> OperatorWithSqrt<O, S> {
+    /// Create a new operator-with-sqrt, verifying dimensions match.
+    pub fn new(operator: O, sqrt: S) -> Result<Self, GmrfError> {
+        if operator.dimension() != sqrt.dimension() {
+            return Err(GmrfError::DimensionMismatch(
+                "operator and square root must share dimensions",
+            ));
+        }
+        Ok(Self { operator, sqrt })
+    }
+
+    /// Access the stored square root operator.
+    pub fn sqrt(&self) -> &S {
+        &self.sqrt
+    }
+}
+
+impl<O: LinearOperator, S: LinearOperator> LinearOperator for OperatorWithSqrt<O, S> {
+    fn dimension(&self) -> usize {
+        self.operator.dimension()
+    }
+
+    fn apply(&self, x: &Vector) -> Result<Vector, GmrfError> {
+        self.operator.apply(x)
+    }
+}
+
+/// Build a Kronecker product of two matrix-backed operators.
+pub fn kronecker(a: &MatrixOperator, b: &MatrixOperator) -> MatrixOperator {
+    let dense_a = DMatrix::from(&a.matrix);
+    let dense_b = DMatrix::from(&b.matrix);
+    let kron = dense_a.kronecker(&dense_b);
+    MatrixOperator::new(SparseMatrix::from(&kron))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nalgebra_sparse::CooMatrix;
+
+    fn identity_matrix(size: usize) -> SparseMatrix {
+        let mut coo = CooMatrix::new(size, size);
+        for i in 0..size {
+            coo.push(i, i, 1.0);
+        }
+        SparseMatrix::from(&coo)
+    }
+
+    #[test]
+    fn operator_with_sqrt_applies_operator() {
+        let mat = identity_matrix(3);
+        let op = MatrixOperator::new(mat.clone());
+        let sqrt = MatrixOperator::new(mat);
+        let op_with_sqrt = OperatorWithSqrt::new(op, sqrt).unwrap();
+        let x = Vector::from_vec(vec![1.0, 2.0, 3.0]);
+        let y = op_with_sqrt.apply(&x).unwrap();
+        assert_eq!(y, x);
+        let y_sqrt = op_with_sqrt.sqrt().apply(&x).unwrap();
+        assert_eq!(y_sqrt, x);
+    }
+
+    #[test]
+    fn kronecker_builds_correct_dimension() {
+        let a = MatrixOperator::new(identity_matrix(2));
+        let b = MatrixOperator::new(identity_matrix(3));
+        let kron = kronecker(&a, &b);
+        assert_eq!(kron.dimension(), 6);
+        let v = Vector::from_vec(vec![1.0; 6]);
+        let out = kron.apply(&v).unwrap();
+        assert_eq!(out.len(), 6);
     }
 }
