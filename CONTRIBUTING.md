@@ -1,60 +1,41 @@
-# Contributing to GaussianMarkovRandomFields.jl
+# Contributing to GaussianMarkovRandomFields (Rust)
 
-Thank you for your interest in contributing to **GaussianMarkovRandomFields.jl**!
-We appreciate your help in improving and maintaining this package.
-The following guidelines will help you get started.
+Thank you for your interest in contributing! The following guidelines will help
+you get started.
 
 ## Getting Started
 
-1. **Fork and Clone** the repository:
+1. **Fork and clone** the repository.
+2. **Build and test**:
    ```sh
-   git clone https://github.com/timweiland/GaussianMarkovRandomFields.jl.git
-   cd GaussianMarkovRandomFields.jl
-   ```
-2. **Set up the environment**:
-   ```julia
-   using Pkg
-   Pkg.activate(".")
-   Pkg.instantiate()
-   ```
-3. **Run tests** to ensure everything works:
-   ```julia
-   using Pkg
-   Pkg.test("GaussianMarkovRandomFields")
+   cargo test
+   cargo test --examples
    ```
 
 ## Code Style
 
-- Follow the [Julia Style Guide](https://docs.julialang.org/en/v1/manual/style-guide/).
+- Follow standard Rust style (`cargo fmt`) and linting (`cargo clippy`).
 - Use meaningful variable names and avoid excessive abbreviations.
-- Format your code using [Runic](https://github.com/fredrikekre/runic):
-  ```sh
-  make format
-  # or
-  runic --inplace .
-  ```
-  If you use pre-commit, install hooks once with `pre-commit install`.
 
 ## Making Changes
 
 - **Open an issue** before implementing new features to discuss your idea.
-- **Document your code** with docstrings using Julia’s `@doc` format.
+- **Document your code** with Rust doc comments and module-level docs.
 - **Write tests** for new functionality (see next section).
 - **Ensure tests pass** before submitting your changes.
 
 ## Testing
 
-GaussianMarkovRandomFields.jl uses `Test.jl` for unit tests. To run tests:
+Run tests with:
 
-```julia
-using Pkg
-Pkg.test("GaussianMarkovRandomFields")
+```sh
+cargo test
 ```
 
 When adding a new feature:
-- Place test cases in the `test/` directory.
-- Write small, focused tests that validate the correctness of your code.
-- If applicable, add edge cases and performance benchmarks.
+- Place integration tests in `tests/` and unit tests alongside modules.
+- Write small, focused tests that validate correctness.
+- Add edge cases and performance benchmarks where appropriate.
 
 ## Submitting a Pull Request
 
@@ -67,15 +48,15 @@ When adding a new feature:
 
 ## Reporting Issues
 
-If you find a bug or have a feature request, please [open an issue](https://github.com/timweiland/GaussianMarkovRandomFields.jl/issues). When reporting bugs:
+If you find a bug or have a feature request, please open an issue on the
+repository. When reporting bugs:
 - Provide a **minimal reproducible example**.
-- Include Julia and GaussianMarkovRandomFields.jl version information.
+- Include Rust and crate version information.
 - Describe expected vs. actual behavior.
 
 ## License
 
 By contributing, you agree that your contributions will be licensed under the same license as the repository.
 
-Thank you for contributing to **GaussianMarkovRandomFields.jl**! 🚀
-
+Thank you for contributing to GaussianMarkovRandomFields!
 

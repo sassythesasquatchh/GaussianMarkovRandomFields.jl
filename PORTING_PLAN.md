@@ -1,6 +1,9 @@
-# Rust Porting Plan for GaussianMarkovRandomFields.jl
+# Rust Porting Plan for GaussianMarkovRandomFields
 
-This document summarizes the existing Julia package and outlines an incremental strategy to recreate the full feature set in Rust. Each phase is designed to land in a working state, building confidence and test coverage as functionality accumulates.
+This document summarizes the feature set from the original Julia package (now
+maintained externally) and outlines an incremental strategy to recreate the full
+feature set in Rust. Each phase is designed to land in a working state, building
+confidence and test coverage as functionality accumulates.
 
 ## Repository Overview
 

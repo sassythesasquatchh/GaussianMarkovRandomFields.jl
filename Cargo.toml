@@ -11,10 +11,10 @@ members = [
 resolver = "2"
 
 [workspace.package]
-authors = ["GaussianMarkovRandomFields.jl contributors"]
+authors = ["GaussianMarkovRandomFields contributors"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/JuliaGaussianProcesses/GaussianMarkovRandomFields.jl"
+repository = "https://github.com/JuliaGaussianProcesses/GaussianMarkovRandomFields"
 
 [workspace.dependencies]
 nalgebra = { version = "0.32", default-features = true }
