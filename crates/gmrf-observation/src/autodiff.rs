@@ -11,8 +11,8 @@ use crate::models::{
 };
 use crate::transform::{DifferentiableTransform, ObservationTransform};
 use gmrf_autodiff::{gradient, jacobian, Dual64};
+use gmrf_core::types::DenseMatrix;
 use gmrf_core::Vector;
-use nalgebra::DMatrix;
 
 /// Trait exposing AD-backed derivatives for observation models.
 pub trait DifferentiableObservation: ObservationModel {
@@ -20,7 +20,7 @@ pub trait DifferentiableObservation: ObservationModel {
     fn log_likelihood_gradient(&self, latent: &Vector) -> Result<Vector, ObservationError>;
 
     /// Jacobian of residuals with respect to the latent vector.
-    fn residual_jacobian(&self, latent: &Vector) -> Result<DMatrix<f64>, ObservationError>;
+    fn residual_jacobian(&self, latent: &Vector) -> Result<DenseMatrix, ObservationError>;
 }
 
 fn check_prediction_length(len: usize, expected: usize) -> Result<(), ObservationError> {
@@ -42,7 +42,7 @@ where
         })
     }
 
-    fn residual_jacobian(&self, latent: &Vector) -> Result<DMatrix<f64>, ObservationError> {
+    fn residual_jacobian(&self, latent: &Vector) -> Result<DenseMatrix, ObservationError> {
         jacobian(latent, |dual_latent| {
             gaussian_residuals_dual(self, dual_latent)
         })
@@ -59,7 +59,7 @@ where
         })
     }
 
-    fn residual_jacobian(&self, latent: &Vector) -> Result<DMatrix<f64>, ObservationError> {
+    fn residual_jacobian(&self, latent: &Vector) -> Result<DenseMatrix, ObservationError> {
         jacobian(latent, |dual_latent| {
             bernoulli_residuals_dual(self, dual_latent)
         })
@@ -76,7 +76,7 @@ where
         })
     }
 
-    fn residual_jacobian(&self, latent: &Vector) -> Result<DMatrix<f64>, ObservationError> {
+    fn residual_jacobian(&self, latent: &Vector) -> Result<DenseMatrix, ObservationError> {
         jacobian(latent, |dual_latent| {
             poisson_residuals_dual(self, dual_latent)
         })
@@ -229,20 +229,40 @@ mod tests {
     #[test]
     fn poisson_jacobian_tracks_design_matrix() {
         let data = Vector::from_vec(vec![1.0, 1.0]);
-        let design = DMatrix::from_row_slice(2, 2, &[1.0, 0.0, 0.0, 1.0]);
+        let design = DenseMatrix::from_fn(2, 2, |i, j| match (i, j) {
+            (0, 0) | (1, 1) => 1.0,
+            _ => 0.0,
+        });
         let model = PoissonLogObservation::with_design_matrix(data.clone(), design, None);
         let latent = Vector::from_element(2, 0.0);
         let jac = model.residual_jacobian(&latent).unwrap();
         // exp(0) = 1 so residual derivative equals design rows
         assert_eq!(jac.nrows(), 2);
-        assert!((jac[(0, 0)] - 1.0).abs() < 1e-9);
-        assert!((jac[(1, 1)] - 1.0).abs() < 1e-9);
+        let col0 = jac
+            .as_ref()
+            .col_iter()
+            .next()
+            .unwrap()
+            .try_as_col_major()
+            .unwrap();
+        let col1 = jac
+            .as_ref()
+            .col_iter()
+            .nth(1)
+            .unwrap()
+            .try_as_col_major()
+            .unwrap();
+        assert!((col0.as_slice()[0] - 1.0).abs() < 1e-9);
+        assert!((col1.as_slice()[1] - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn bernoulli_gradient_handles_design_matrix() {
         let data = Vector::from_vec(vec![1.0, 0.0]);
-        let design = DMatrix::from_row_slice(2, 2, &[1.0, 0.0, 0.0, 1.0]);
+        let design = DenseMatrix::from_fn(2, 2, |i, j| match (i, j) {
+            (0, 0) | (1, 1) => 1.0,
+            _ => 0.0,
+        });
         let model = BernoulliLogitObservation::with_design_matrix(data.clone(), design);
         let latent = Vector::from_element(2, 0.0);
         let grad = model.log_likelihood_gradient(&latent).unwrap();

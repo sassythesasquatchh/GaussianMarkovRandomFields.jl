@@ -8,8 +8,8 @@
 
 use crate::errors::ObservationError;
 use crate::transform::{IdentityTransform, ObservationTransform};
+use gmrf_core::types::DenseMatrix;
 use gmrf_core::Vector;
-use nalgebra::DMatrix;
 
 fn logistic(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
@@ -49,7 +49,7 @@ impl GaussianObservation<IdentityTransform> {
 
 impl GaussianObservation<crate::transform::LinearTransform> {
     /// Construct a Gaussian model with a dense design matrix.
-    pub fn with_design_matrix(data: Vector, design: DMatrix<f64>, noise_variance: f64) -> Self {
+    pub fn with_design_matrix(data: Vector, design: DenseMatrix, noise_variance: f64) -> Self {
         let transform = crate::transform::LinearTransform::new(design);
         Self {
             data,
@@ -107,7 +107,7 @@ impl BernoulliLogitObservation<IdentityTransform> {
 
 impl BernoulliLogitObservation<crate::transform::LinearTransform> {
     /// Construct a Bernoulli-logit observation with design matrix.
-    pub fn with_design_matrix(data: Vector, design: DMatrix<f64>) -> Self {
+    pub fn with_design_matrix(data: Vector, design: DenseMatrix) -> Self {
         let transform = crate::transform::LinearTransform::new(design);
         Self { data, transform }
     }
@@ -185,7 +185,7 @@ impl PoissonLogObservation<IdentityTransform> {
 
 impl PoissonLogObservation<crate::transform::LinearTransform> {
     /// Construct a Poisson log-link observation using a design matrix.
-    pub fn with_design_matrix(data: Vector, design: DMatrix<f64>, offset: Option<Vector>) -> Self {
+    pub fn with_design_matrix(data: Vector, design: DenseMatrix, offset: Option<Vector>) -> Self {
         let transform = crate::transform::LinearTransform::new(design);
         Self {
             data,
@@ -318,7 +318,10 @@ mod tests {
     #[test]
     fn gaussian_design_matrix_residuals() {
         let data = Vector::from_vec(vec![1.0, 2.0]);
-        let design = DMatrix::from_row_slice(2, 2, &[1.0, 0.0, 0.0, 1.0]);
+        let design = DenseMatrix::from_fn(2, 2, |i, j| match (i, j) {
+            (0, 0) | (1, 1) => 1.0,
+            _ => 0.0,
+        });
         let model = GaussianObservation::with_design_matrix(data.clone(), design, 1.0);
         let latent = Vector::from_vec(vec![1.0, 3.0]);
         let residuals = model.residuals(&latent).unwrap();
@@ -329,7 +332,10 @@ mod tests {
     #[test]
     fn bernoulli_logit_log_likelihood() {
         let data = Vector::from_vec(vec![1.0, 0.0]);
-        let design = DMatrix::from_row_slice(2, 2, &[1.0, 0.0, 0.0, 1.0]);
+        let design = DenseMatrix::from_fn(2, 2, |i, j| match (i, j) {
+            (0, 0) | (1, 1) => 1.0,
+            _ => 0.0,
+        });
         let model = BernoulliLogitObservation::with_design_matrix(data.clone(), design);
         let latent = Vector::from_vec(vec![10.0, -10.0]);
         let ll = model.log_likelihood(&latent).unwrap();

@@ -6,9 +6,8 @@
 
 use gmrf_core::observation::{apply_gaussian_observations, observation_selector};
 use gmrf_core::solver::{DirectBackend, Solver, SolverAlgorithm, SolverConfig};
-use gmrf_core::types::{SparseMatrix, Vector};
+use gmrf_core::types::{CooMatrix, SparseMatrix, Vector};
 use gmrf_core::{write_structured_points, Gmrf};
-use nalgebra_sparse::CooMatrix;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
@@ -54,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &prior_precision,
         &observation_matrix,
         &observations,
+        None,
         noise_variance,
     );
 

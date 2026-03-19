@@ -7,9 +7,8 @@
 
 use gmrf_core::observation::{apply_gaussian_observations, build_linear_observation_matrix};
 use gmrf_core::solver::{DirectBackend, Solver, SolverAlgorithm, SolverConfig};
-use gmrf_core::types::{SparseMatrix, Vector};
+use gmrf_core::types::{CooMatrix, SparseMatrix, Vector};
 use gmrf_core::Gmrf;
-use nalgebra_sparse::CooMatrix;
 use rand::thread_rng;
 use rand_distr::{Distribution, Normal};
 
@@ -37,8 +36,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Draw a latent sample from the prior to synthesize observations.
     let mut rng = thread_rng();
-    let mut prior = Gmrf::from_mean_and_precision(Vector::zeros(dimension), prior_precision.clone())?
-        .with_solver_config(solver_config);
+    let mut prior =
+        Gmrf::from_mean_and_precision(Vector::zeros(dimension), prior_precision.clone())?
+            .with_solver_config(solver_config);
     let latent_true = prior.sample(&mut rng)?;
 
     let noise = Normal::new(0.0, noise_variance.sqrt())?;
@@ -52,16 +52,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &prior_precision,
         &observation_matrix,
         &observations,
+        None,
         noise_variance,
     );
 
     // Compute posterior mean with the same sparse iterative solver.
     let mut solver = Solver::new(solver_config);
     let posterior_mean = solver.solve_matrix(&posterior_precision, &info)?;
-    let mut posterior =
-        Gmrf::from_mean_and_precision(posterior_mean, posterior_precision)?.with_solver_config(
-            solver_config,
-        );
+    let mut posterior = Gmrf::from_mean_and_precision(posterior_mean, posterior_precision)?
+        .with_solver_config(solver_config);
 
     let posterior_sample = posterior.sample(&mut rng)?;
 

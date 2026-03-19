@@ -4,12 +4,11 @@
 //! connectivity. They are intentionally minimal but sufficient for mass/stiffness assembly and
 //! SPDE discretizations.
 
-use nalgebra::SVector;
-
 use crate::errors::FemError;
+use crate::linalg::Vector2;
 
 /// 2D point used for node coordinates.
-pub type Point2 = SVector<f64, 2>;
+pub type Point2 = Vector2;
 
 /// Supported cell types for 2D meshes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

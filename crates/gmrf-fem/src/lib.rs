@@ -9,6 +9,7 @@ pub mod assembly;
 pub mod errors;
 pub mod gmsh;
 pub mod interpolation;
+pub mod linalg;
 pub mod mesh;
 pub mod quadrature;
 
@@ -24,5 +25,6 @@ pub use interpolation::{
     quad_bilinear_gradients, quad_bilinear_shapes, triangle_linear_gradients,
     triangle_linear_shapes,
 };
+pub use linalg::{Matrix2, Vector2};
 pub use mesh::{CellType, ElementConnectivity, Mesh2d, Point2};
 pub use quadrature::{quad_gauss_2x2, triangle_degree_two, QuadraturePoint, QuadratureRule};

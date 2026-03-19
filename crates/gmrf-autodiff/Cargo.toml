@@ -9,5 +9,4 @@ repository = "https://github.com/JuliaGaussianProcesses/GaussianMarkovRandomFiel
 
 [dependencies]
 gmrf-core = { path = "../gmrf-core" }
-nalgebra = { workspace = true }
 thiserror = { workspace = true }

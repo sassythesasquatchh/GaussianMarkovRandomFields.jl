@@ -8,10 +8,11 @@ use std::f64::consts::PI;
 
 use crate::discretization::FemDiscretization2d;
 use crate::errors::SpdeError;
-use gmrf_core::types::{SparseMatrix, Vector};
+use faer::sparse::linalg::matmul::sparse_sparse_matmul;
+use faer::Par;
+use gmrf_core::types::{CooMatrix, SparseMatrix, Vector};
 use gmrf_core::Gmrf;
-use nalgebra::{DMatrix, Matrix2};
-use nalgebra_sparse::CooMatrix;
+use gmrf_fem::Matrix2;
 use statrs::function::gamma::gamma;
 
 /// Whittle–Matérn SPDE parameters for 2D domains.
@@ -19,7 +20,7 @@ pub struct MaternSpde2d {
     pub kappa: f64,
     pub nu: f64,
     pub sigma2: f64,
-    pub diffusion_factor: Matrix2<f64>,
+    pub diffusion_factor: Matrix2,
 }
 
 impl MaternSpde2d {
@@ -28,7 +29,7 @@ impl MaternSpde2d {
         kappa: f64,
         nu: f64,
         sigma2: f64,
-        diffusion_factor: Option<Matrix2<f64>>,
+        diffusion_factor: Option<Matrix2>,
     ) -> Result<Self, SpdeError> {
         if !(kappa.is_finite() && kappa > 0.0) {
             return Err(SpdeError::InvalidParameters("κ must be positive"));
@@ -53,7 +54,7 @@ impl MaternSpde2d {
         range: f64,
         smoothness: u32,
         sigma2: f64,
-        diffusion_factor: Option<Matrix2<f64>>,
+        diffusion_factor: Option<Matrix2>,
     ) -> Result<Self, SpdeError> {
         let nu = smoothness_to_nu(smoothness, 2)?;
         let kappa = range_to_kappa(range, nu)?;
@@ -133,10 +134,15 @@ fn alpha_one_precision(
     stiffness: &SparseMatrix,
     scaling: f64,
 ) -> Result<SparseMatrix, SpdeError> {
-    let mass_dense: DMatrix<f64> = DMatrix::from(mass);
-    let stiffness_dense: DMatrix<f64> = DMatrix::from(stiffness);
-    let precision_dense = scaling * (kappa * kappa * mass_dense + stiffness_dense);
-    Ok(dense_to_sparse(&precision_dense))
+    let kappa2 = kappa * kappa;
+    let mut coo = CooMatrix::new(mass.nrows(), mass.ncols());
+    for (i, j, v) in mass.triplet_iter() {
+        coo.push(i, j, scaling * kappa2 * v);
+    }
+    for (i, j, v) in stiffness.triplet_iter() {
+        coo.push(i, j, scaling * v);
+    }
+    Ok(SparseMatrix::from(&coo))
 }
 
 fn alpha_two_precision(
@@ -147,28 +153,28 @@ fn alpha_two_precision(
     scaling: f64,
 ) -> Result<SparseMatrix, SpdeError> {
     let kappa2 = kappa * kappa;
-    let mass_dense: DMatrix<f64> = DMatrix::from(mass);
-    let stiffness_dense: DMatrix<f64> = DMatrix::from(stiffness);
-    let mass_inv_diag = lumped_mass.map(|v| 1.0 / v);
-    let mass_inv = DMatrix::from_diagonal(&mass_inv_diag);
-
-    let q = kappa2 * kappa2 * &mass_dense
-        + 2.0 * kappa2 * &stiffness_dense
-        + &stiffness_dense * &mass_inv * &stiffness_dense;
-    Ok(dense_to_sparse(&(scaling * q)))
-}
-
-fn dense_to_sparse(mat: &DMatrix<f64>) -> SparseMatrix {
-    let mut coo = CooMatrix::new(mat.nrows(), mat.ncols());
-    for i in 0..mat.nrows() {
-        for j in 0..mat.ncols() {
-            let val = mat[(i, j)];
-            if val.abs() > 1e-14 {
-                coo.push(i, j, val);
-            }
-        }
+    let mut coo = CooMatrix::new(mass.nrows(), mass.ncols());
+    for (i, j, v) in mass.triplet_iter() {
+        coo.push(i, j, scaling * kappa2 * kappa2 * v);
     }
-    SparseMatrix::from(&coo)
+    for (i, j, v) in stiffness.triplet_iter() {
+        coo.push(i, j, scaling * 2.0 * kappa2 * v);
+    }
+
+    let mass_inv_diag = lumped_mass.map(|v| 1.0 / v);
+    let mut scaled = CooMatrix::new(stiffness.nrows(), stiffness.ncols());
+    for (i, j, v) in stiffness.triplet_iter() {
+        scaled.push(i, j, *v * mass_inv_diag[j]);
+    }
+    let scaled = SparseMatrix::from(&scaled);
+    let kk = sparse_sparse_matmul(scaled.as_ref(), stiffness.as_ref(), scaling, Par::Seq)
+        .map_err(|_| SpdeError::InvalidParameters("sparse matmul failed"))?;
+    let kk = SparseMatrix::from(kk);
+    for (i, j, v) in kk.triplet_iter() {
+        coo.push(i, j, *v);
+    }
+
+    Ok(SparseMatrix::from(&coo))
 }
 
 #[cfg(test)]

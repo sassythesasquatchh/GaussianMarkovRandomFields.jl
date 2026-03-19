@@ -3,9 +3,8 @@
 //! as solver implementations evolve.
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use gmrf_core::types::SparseMatrix;
+use gmrf_core::types::{CooMatrix, SparseMatrix};
 use gmrf_core::{Gmrf, Solver, Vector};
-use nalgebra_sparse::CooMatrix;
 use rand::{rngs::StdRng, SeedableRng};
 
 fn identity_precision(size: usize, scale: f64) -> SparseMatrix {

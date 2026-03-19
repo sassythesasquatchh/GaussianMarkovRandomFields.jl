@@ -8,10 +8,9 @@ description = "SPDE discretizations for the Rust port of GaussianMarkovRandomFie
 repository = "https://github.com/JuliaGaussianProcesses/GaussianMarkovRandomFields.jl"
 
 [dependencies]
+faer.workspace = true
 gmrf-core = { path = "../gmrf-core" }
 gmrf-fem = { path = "../gmrf-fem" }
-nalgebra.workspace = true
-nalgebra-sparse.workspace = true
 statrs = "0.16"
 thiserror.workspace = true
 

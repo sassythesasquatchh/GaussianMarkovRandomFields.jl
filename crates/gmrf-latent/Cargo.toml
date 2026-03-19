@@ -7,7 +7,5 @@ license = "MIT"
 
 [dependencies]
 gmrf-core = { path = "../gmrf-core" }
-nalgebra = { workspace = true }
-nalgebra-sparse = { workspace = true }
 petgraph = "0.6"
 thiserror = { workspace = true }

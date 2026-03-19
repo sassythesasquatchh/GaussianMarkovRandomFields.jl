@@ -2,6 +2,7 @@
 //! These tests validate SPDE discretization and stacked observation flows
 //! to guard against regressions as features are added.
 
+use gmrf_core::types::DenseMatrix;
 use gmrf_core::Vector;
 use gmrf_latent::ar1_chain;
 use gmrf_observation::{
@@ -9,7 +10,6 @@ use gmrf_observation::{
     PoissonLogObservation,
 };
 use gmrf_spde::{FemDiscretization2d, MaternSpde2d};
-use nalgebra::DMatrix;
 use rand::{rngs::StdRng, SeedableRng};
 
 use gmrf_fem::{ElementConnectivity, Mesh2d, Point2};
@@ -63,7 +63,15 @@ fn stacked_observation_matches_component_loglikelihoods() {
     let state = latent.mean().clone();
 
     let gaussian = GaussianObservation::new(Vector::from_vec(vec![0.1, -0.2, 0.05]), 0.25);
-    let design = DMatrix::from_row_slice(2, 3, &[1.0, 0.0, 0.5, 0.0, 1.0, -0.25]);
+    let design = DenseMatrix::from_fn(2, 3, |i, j| {
+        match (i, j) {
+            (0, 0) => 1.0,
+            (0, 2) => 0.5,
+            (1, 1) => 1.0,
+            (1, 2) => -0.25,
+            _ => 0.0,
+        }
+    });
     let bernoulli = BernoulliLogitObservation::with_design_matrix(
         Vector::from_vec(vec![1.0, 0.0]),
         design.clone(),

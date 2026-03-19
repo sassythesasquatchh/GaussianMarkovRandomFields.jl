@@ -5,8 +5,7 @@
 //! precision operators, preconditioners, and composed transforms without forcing
 //! a particular backend.
 
-use crate::types::{GmrfError, SparseMatrix, Vector};
-use nalgebra::DMatrix;
+use crate::types::{CooMatrix, GmrfError, SparseMatrix, Vector};
 
 /// A trait representing a generic linear operator `y = A * x`.
 pub trait LinearOperator: Send + Sync {
@@ -41,7 +40,7 @@ impl LinearOperator for MatrixOperator {
             ));
         }
 
-        Ok(&self.matrix * x)
+        Ok(sparse_matvec(&self.matrix, x))
     }
 }
 
@@ -104,16 +103,32 @@ impl<O: LinearOperator, S: LinearOperator> LinearOperator for OperatorWithSqrt<O
 
 /// Build a Kronecker product of two matrix-backed operators.
 pub fn kronecker(a: &MatrixOperator, b: &MatrixOperator) -> MatrixOperator {
-    let dense_a = DMatrix::from(&a.matrix);
-    let dense_b = DMatrix::from(&b.matrix);
-    let kron = dense_a.kronecker(&dense_b);
-    MatrixOperator::new(SparseMatrix::from(&kron))
+    let (a_rows, a_cols) = (a.matrix.nrows(), a.matrix.ncols());
+    let (b_rows, b_cols) = (b.matrix.nrows(), b.matrix.ncols());
+    let mut coo = CooMatrix::new(a_rows * b_rows, a_cols * b_cols);
+
+    for (ai, aj, av) in a.matrix.triplet_iter() {
+        for (bi, bj, bv) in b.matrix.triplet_iter() {
+            let row = ai * b_rows + bi;
+            let col = aj * b_cols + bj;
+            coo.push(row, col, *av * *bv);
+        }
+    }
+
+    MatrixOperator::new(SparseMatrix::from(&coo))
+}
+
+fn sparse_matvec(matrix: &SparseMatrix, x: &Vector) -> Vector {
+    let mut out = Vector::zeros(matrix.nrows());
+    for (row, col, value) in matrix.triplet_iter() {
+        out[row] += *value * x[col];
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nalgebra_sparse::CooMatrix;
 
     fn identity_matrix(size: usize) -> SparseMatrix {
         let mut coo = CooMatrix::new(size, size);

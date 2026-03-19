@@ -5,8 +5,8 @@
 //! with a builder that chains likelihood constructors before emitting
 //! a `StackedObservations` instance.
 
+use gmrf_core::types::DenseMatrix;
 use gmrf_core::Vector;
-use nalgebra::DMatrix;
 
 use crate::models::{
     BernoulliLogitObservation, GaussianObservation, ObservationModel, PoissonLogObservation,
@@ -36,7 +36,7 @@ impl ObservationBuilder {
     pub fn gaussian_with_design(
         mut self,
         data: Vector,
-        design: DMatrix<f64>,
+        design: DenseMatrix,
         noise_variance: f64,
     ) -> Self {
         self.models
@@ -56,7 +56,7 @@ impl ObservationBuilder {
     }
 
     /// Add a Bernoulli-logit observation with design matrix.
-    pub fn bernoulli_logit_with_design(mut self, data: Vector, design: DMatrix<f64>) -> Self {
+    pub fn bernoulli_logit_with_design(mut self, data: Vector, design: DenseMatrix) -> Self {
         self.models
             .push(Box::new(BernoulliLogitObservation::with_design_matrix(
                 data, design,
@@ -78,7 +78,7 @@ impl ObservationBuilder {
     pub fn poisson_log_with_design(
         mut self,
         data: Vector,
-        design: DMatrix<f64>,
+        design: DenseMatrix,
         offset: Option<Vector>,
     ) -> Self {
         self.models
@@ -101,7 +101,10 @@ mod tests {
     #[test]
     fn chains_multiple_models() {
         let data = Vector::from_element(2, 1.0);
-        let design = DMatrix::from_row_slice(2, 2, &[1.0, 0.0, 0.0, 1.0]);
+        let design = DenseMatrix::from_fn(2, 2, |i, j| match (i, j) {
+            (0, 0) | (1, 1) => 1.0,
+            _ => 0.0,
+        });
 
         let stack = ObservationBuilder::new()
             .gaussian(data.clone(), 0.5)

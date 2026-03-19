@@ -7,8 +7,8 @@ use crate::mesh::Point2;
 
 /// Linear triangle shape values at a local coordinate (ξ, η) with ξ, η ≥ 0 and ξ + η ≤ 1.
 pub fn triangle_linear_shapes(local: &Point2) -> [f64; 3] {
-    let xi = local[0];
-    let eta = local[1];
+    let xi = local.x;
+    let eta = local.y;
     [1.0 - xi - eta, xi, eta]
 }
 
@@ -23,7 +23,7 @@ pub fn triangle_linear_gradients() -> [Point2; 3] {
 
 /// Bilinear quadrilateral shape values at a local coordinate on [-1, 1]².
 pub fn quad_bilinear_shapes(local: &Point2) -> [f64; 4] {
-    let (xi, eta) = (local[0], local[1]);
+    let (xi, eta) = (local.x, local.y);
     [
         0.25 * (1.0 - xi) * (1.0 - eta),
         0.25 * (1.0 + xi) * (1.0 - eta),
@@ -34,7 +34,7 @@ pub fn quad_bilinear_shapes(local: &Point2) -> [f64; 4] {
 
 /// Reference gradients for bilinear quadrilateral shape functions.
 pub fn quad_bilinear_gradients(local: &Point2) -> [Point2; 4] {
-    let (xi, eta) = (local[0], local[1]);
+    let (xi, eta) = (local.x, local.y);
     [
         Point2::new(-0.25 * (1.0 - eta), -0.25 * (1.0 - xi)),
         Point2::new(0.25 * (1.0 - eta), -0.25 * (1.0 + xi)),

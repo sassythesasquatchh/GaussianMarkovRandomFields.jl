@@ -1,6 +1,6 @@
 use crate::Dual64;
+use gmrf_core::types::DenseMatrix;
 use gmrf_core::Vector;
-use nalgebra::DMatrix;
 use thiserror::Error;
 
 /// Errors surfaced by autodiff helpers when provided invalid inputs.
@@ -26,7 +26,7 @@ where
 }
 
 /// Compute the Jacobian of a vector-valued function with respect to the input.
-pub fn jacobian<F, E>(point: &Vector, f: F) -> Result<DMatrix<f64>, E>
+pub fn jacobian<F, E>(point: &Vector, f: F) -> Result<DenseMatrix, E>
 where
     F: Fn(&[Dual64]) -> Result<Vec<Dual64>, E>,
     E: From<AutodiffError>,
@@ -38,19 +38,16 @@ where
 
     let outputs = f(&duals)?;
     if outputs.is_empty() {
-        return Ok(DMatrix::from_element(0, dimension, 0.0));
+        return Ok(DenseMatrix::zeros(0, dimension));
     }
 
     let rows = outputs.len();
-    let mut jac = DMatrix::zeros(rows, dimension);
-    for (i, dual) in outputs.iter().enumerate() {
+    for dual in outputs.iter() {
         if dual.derivatives().len() != dimension {
             return Err(AutodiffError::DimensionMismatch("gradient length mismatch").into());
         }
-        for (j, deriv) in dual.derivatives().iter().enumerate() {
-            jac[(i, j)] = *deriv;
-        }
     }
+    let jac = DenseMatrix::from_fn(rows, dimension, |i, j| outputs[i].derivatives()[j]);
 
     Ok(jac)
 }
@@ -85,8 +82,14 @@ mod tests {
         .unwrap();
         assert_eq!(jac.nrows(), 2);
         assert_eq!(jac.ncols(), 2);
-        assert!((jac[(0, 0)] - 1.0).abs() < 1e-9);
-        assert!((jac[(1, 0)] - 3.0).abs() < 1e-9);
-        assert!((jac[(1, 1)] - 1.0).abs() < 1e-9);
+        fn dense_get(mat: &DenseMatrix, row: usize, col: usize) -> f64 {
+            let col_ref = mat.as_ref().col_iter().nth(col).unwrap();
+            let col_ref = col_ref.try_as_col_major().unwrap();
+            col_ref.as_slice()[row]
+        }
+
+        assert!((dense_get(&jac, 0, 0) - 1.0).abs() < 1e-9);
+        assert!((dense_get(&jac, 1, 0) - 3.0).abs() < 1e-9);
+        assert!((dense_get(&jac, 1, 1) - 1.0).abs() < 1e-9);
     }
 }

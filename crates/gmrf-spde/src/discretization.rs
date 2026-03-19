@@ -4,14 +4,13 @@
 //! mass, stiffness, and lumped mass terms needed by Matérn recursions.
 
 use crate::errors::SpdeError;
-use gmrf_core::types::{SparseMatrix, Vector};
+use gmrf_core::types::{CooMatrix, SparseMatrix, Vector};
 use gmrf_fem::quadrature::QuadratureRule;
 use gmrf_fem::{
     assemble_advection_matrix, assemble_mass_matrix, assemble_stiffness_matrix_with_diffusion,
     assemble_streamline_diffusion_matrix, lumped_mass_vector, Mesh2d,
 };
-use nalgebra::Matrix2;
-use nalgebra_sparse::CooMatrix;
+use gmrf_fem::{Matrix2, Vector2};
 
 /// Precomputed FEM data required for SPDE discretization.
 pub struct FemDiscretization2d {
@@ -29,7 +28,7 @@ impl FemDiscretization2d {
     pub fn new(
         mesh: Mesh2d,
         quadrature: Option<QuadratureRule>,
-        diffusion_factor: Option<Matrix2<f64>>,
+        diffusion_factor: Option<Matrix2>,
         constraint_noise: Option<Vector>,
     ) -> Result<Self, SpdeError> {
         let quad_ref = quadrature.as_ref();
@@ -54,10 +53,7 @@ impl FemDiscretization2d {
     }
 
     /// Assemble an advection matrix using the discretization's quadrature settings.
-    pub fn advection_matrix(
-        &self,
-        velocity: nalgebra::Vector2<f64>,
-    ) -> Result<SparseMatrix, SpdeError> {
+    pub fn advection_matrix(&self, velocity: Vector2) -> Result<SparseMatrix, SpdeError> {
         let quad_ref = self.quadrature.as_ref();
         assemble_advection_matrix(&self.mesh, quad_ref, velocity).map_err(SpdeError::from)
     }
@@ -65,7 +61,7 @@ impl FemDiscretization2d {
     /// Assemble a streamline diffusion stabilization matrix using the stored quadrature.
     pub fn streamline_diffusion(
         &self,
-        velocity: nalgebra::Vector2<f64>,
+        velocity: Vector2,
         stabilization_scale: f64,
     ) -> Result<SparseMatrix, SpdeError> {
         let quad_ref = self.quadrature.as_ref();

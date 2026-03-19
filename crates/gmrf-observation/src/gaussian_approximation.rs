@@ -8,8 +8,11 @@
 
 use crate::autodiff::DifferentiableObservation;
 use crate::errors::ObservationError;
+use faer::linalg::matmul::matmul;
+use faer::linalg::solvers::Solve;
+use faer::{unzip, zip, Accum, Idx, Par, Side, Unbind};
+use gmrf_core::types::{CooMatrix, DenseMatrix};
 use gmrf_core::{Gmrf, GmrfError, SparseMatrix, Vector};
-use nalgebra::{DMatrix, DVector};
 use thiserror::Error;
 
 /// Result of a Laplace approximation run.
@@ -32,18 +35,44 @@ pub enum GaussianApproximationError {
     NonFiniteStep,
 }
 
-/// Convert a dense matrix into a sparse CSR matrix (dropping exact zeros).
-fn dense_to_csr(mat: &DMatrix<f64>) -> SparseMatrix {
-    let mut coo = nalgebra_sparse::CooMatrix::new(mat.nrows(), mat.ncols());
-    for i in 0..mat.nrows() {
-        for j in 0..mat.ncols() {
-            let v = mat[(i, j)];
-            if v != 0.0 {
-                coo.push(i, j, v);
+/// Convert a dense matrix into a sparse matrix (dropping exact zeros).
+fn dense_to_sparse(mat: &DenseMatrix) -> SparseMatrix {
+    let mut coo = CooMatrix::new(mat.nrows(), mat.ncols());
+    for (j, col) in mat.as_ref().col_iter().enumerate() {
+        let col = col.try_as_col_major().unwrap();
+        for (i, v) in col.as_slice().iter().enumerate() {
+            if *v != 0.0 {
+                coo.push(i, j, *v);
             }
         }
     }
     SparseMatrix::from(&coo)
+}
+
+fn sparse_to_dense(mat: &SparseMatrix) -> DenseMatrix {
+    let mut dense = DenseMatrix::zeros(mat.nrows(), mat.ncols());
+    let mut dense_mut = dense.as_mut();
+    for (row, col, value) in mat.triplet_iter() {
+        let i = unsafe { Idx::<usize>::new_unbound(row) };
+        let j = unsafe { Idx::<usize>::new_unbound(col) };
+        dense_mut[(i, j)] += *value;
+    }
+    dense
+}
+
+fn dense_matvec(mat: &DenseMatrix, vec: &Vector) -> Vector {
+    let mut out = Vector::zeros(mat.nrows());
+    for (j, col) in mat.as_ref().col_iter().enumerate() {
+        let xj = vec[j];
+        if xj == 0.0 {
+            continue;
+        }
+        let col = col.try_as_col_major().unwrap();
+        for (i, v) in col.as_slice().iter().enumerate() {
+            out[i] += *v * xj;
+        }
+    }
+    out
 }
 
 /// Perform a Laplace (Gaussian) approximation of the posterior `p(x | y)`.
@@ -63,7 +92,7 @@ pub fn gaussian_approximation<O: DifferentiableObservation>(
     let q = prior
         .precision_matrix()
         .ok_or(GaussianApproximationError::MissingPrecisionMatrix)?;
-    let q_dense: DMatrix<f64> = DMatrix::from(q);
+    let q_dense = sparse_to_dense(q);
     let mean = prior.mean_vector().clone();
 
     let mut converged = false;
@@ -72,22 +101,30 @@ pub fn gaussian_approximation<O: DifferentiableObservation>(
 
     for iter in 0..max_iter {
         iters_done = iter + 1;
-        let grad_loglik: DVector<f64> = obs.log_likelihood_gradient(&x)?.into();
+        let grad_loglik = obs.log_likelihood_gradient(&x)?;
         let jac_residuals = obs.residual_jacobian(&x)?;
-        let h_obs = jac_residuals.transpose() * jac_residuals;
+        let mut h_obs = DenseMatrix::zeros(jac_residuals.ncols(), jac_residuals.ncols());
+        matmul(
+            &mut h_obs,
+            Accum::Replace,
+            jac_residuals.as_ref().transpose(),
+            jac_residuals.as_ref(),
+            1.0,
+            Par::Seq,
+        );
 
-        let h_total = &q_dense + h_obs;
+        let mut h_total = q_dense.clone();
+        zip!(&mut h_total, &h_obs).for_each(|unzip!(dst, src)| *dst += *src);
         let chol = h_total
-            .cholesky()
-            .ok_or(GaussianApproximationError::Gmrf(
-                GmrfError::NonPositiveDefinite,
-            ))?;
+            .llt(Side::Lower)
+            .map_err(|_| GaussianApproximationError::Gmrf(GmrfError::NonPositiveDefinite))?;
 
         // Gradient of negative log-posterior: Q(x-μ) - ∇loglik
         let diff = &x - &mean;
-        let grad_neg = &q_dense * diff - grad_loglik;
+        let grad_neg = dense_matvec(&q_dense, &diff) - &grad_loglik;
 
-        let step = chol.solve(&grad_neg);
+        let mut step = grad_neg.clone();
+        chol.solve_in_place(step.as_col_mut().as_mat_mut());
         step_norm = step.norm();
 
         if !step.iter().all(|v| v.is_finite()) {
@@ -101,12 +138,20 @@ pub fn gaussian_approximation<O: DifferentiableObservation>(
         }
     }
 
-    let h_final = {
-        let jac_residuals = obs.residual_jacobian(&x)?;
-        &q_dense + jac_residuals.transpose() * jac_residuals
-    };
+    let mut h_final = q_dense.clone();
+    let jac_residuals = obs.residual_jacobian(&x)?;
+    let mut h_obs = DenseMatrix::zeros(jac_residuals.ncols(), jac_residuals.ncols());
+    matmul(
+        &mut h_obs,
+        Accum::Replace,
+        jac_residuals.as_ref().transpose(),
+        jac_residuals.as_ref(),
+        1.0,
+        Par::Seq,
+    );
+    zip!(&mut h_final, &h_obs).for_each(|unzip!(dst, src)| *dst += *src);
 
-    let posterior_precision = dense_to_csr(&h_final);
+    let posterior_precision = dense_to_sparse(&h_final);
     let posterior = Gmrf::from_mean_and_precision(x.clone(), posterior_precision)?;
 
     Ok(LaplacePosterior {
@@ -127,7 +172,7 @@ mod tests {
         let data = Vector::from_vec(vec![1.0, 2.0]);
         let obs = GaussianObservation::new(data.clone(), 1.0);
         let prior_precision = {
-            let mut coo = nalgebra_sparse::CooMatrix::new(2, 2);
+            let mut coo = CooMatrix::new(2, 2);
             coo.push(0, 0, 1.0);
             coo.push(1, 1, 1.0);
             SparseMatrix::from(&coo)

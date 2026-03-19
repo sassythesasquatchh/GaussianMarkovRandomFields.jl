@@ -4,9 +4,8 @@
 //! random-walk, IID noise, Besag/BYM2 spatial components, and compositions
 //! via block-diagonal or Kronecker products.
 
-use gmrf_core::types::{SparseMatrix, Vector};
+use gmrf_core::types::{CooMatrix, SparseMatrix, Vector};
 use gmrf_core::Gmrf;
-use nalgebra_sparse::CooMatrix;
 
 use crate::errors::LatentModelError;
 use crate::graph::Neighborhood;

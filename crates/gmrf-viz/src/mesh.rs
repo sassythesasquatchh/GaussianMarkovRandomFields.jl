@@ -187,10 +187,10 @@ impl Bounds {
         let mut max = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
 
         for n in nodes {
-            min[0] = min[0].min(n[0]);
-            min[1] = min[1].min(n[1]);
-            max[0] = max[0].max(n[0]);
-            max[1] = max[1].max(n[1]);
+            min.x = min.x.min(n.x);
+            min.y = min.y.min(n.y);
+            max.x = max.x.max(n.x);
+            max.y = max.y.max(n.y);
         }
 
         Self { min, max }
@@ -200,11 +200,11 @@ impl Bounds {
         let width = (options.width - 2 * options.margin) as f64;
         let height = (options.height - 2 * options.margin) as f64;
 
-        let span_x = (self.max[0] - self.min[0]).max(1e-9);
-        let span_y = (self.max[1] - self.min[1]).max(1e-9);
+        let span_x = (self.max.x - self.min.x).max(1e-9);
+        let span_y = (self.max.y - self.min.y).max(1e-9);
 
-        let norm_x = (point[0] - self.min[0]) / span_x;
-        let norm_y = (point[1] - self.min[1]) / span_y;
+        let norm_x = (point.x - self.min.x) / span_x;
+        let norm_y = (point.y - self.min.y) / span_y;
 
         let x = options.margin as f64 + norm_x * width;
         let y = options.margin as f64 + (1.0 - norm_y) * height;

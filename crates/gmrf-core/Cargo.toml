@@ -8,8 +8,7 @@ description = "Core Gaussian Markov Random Field types and solvers for the Rust 
 repository = "https://github.com/JuliaGaussianProcesses/GaussianMarkovRandomFields.jl"
 
 [dependencies]
-nalgebra = { workspace = true }
-nalgebra-sparse = { workspace = true }
+faer = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 thiserror = { workspace = true }

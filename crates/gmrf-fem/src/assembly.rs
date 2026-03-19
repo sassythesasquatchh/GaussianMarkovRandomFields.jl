@@ -4,46 +4,44 @@
 //! gradients, map them to physical coordinates, and accumulate contributions into sparse matrices
 //! that align with `gmrf-core`'s sparse aliases.
 
-use nalgebra::{Matrix2, Vector2};
-use nalgebra_sparse::CooMatrix;
-
 use crate::errors::FemError;
 use crate::interpolation::{
     quad_bilinear_gradients, quad_bilinear_shapes, triangle_linear_gradients,
     triangle_linear_shapes,
 };
+use crate::linalg::{Matrix2, Vector2};
 use crate::mesh::{ElementConnectivity, Mesh2d};
 use crate::quadrature::{quad_gauss_2x2, triangle_degree_two, QuadratureRule};
-use gmrf_core::types::{SparseMatrix, Vector};
+use gmrf_core::types::{CooMatrix, SparseMatrix, Vector};
 
-fn element_coordinates(mesh: &Mesh2d, element: &ElementConnectivity) -> Vec<Vector2<f64>> {
+fn element_coordinates(mesh: &Mesh2d, element: &ElementConnectivity) -> Vec<Vector2> {
     element
         .node_indices()
         .into_iter()
-        .map(|idx| mesh.nodes()[idx].into())
+        .map(|idx| mesh.nodes()[idx])
         .collect()
 }
 
-fn jacobian(coords: &[Vector2<f64>], gradients_ref: &[Vector2<f64>]) -> Matrix2<f64> {
+fn jacobian(coords: &[Vector2], gradients_ref: &[Vector2]) -> Matrix2 {
     let mut j = Matrix2::zeros();
     for (node, grad) in coords.iter().zip(gradients_ref.iter()) {
-        j += node * grad.transpose();
+        j += node.outer(grad);
     }
     j
 }
 
 fn shape_gradients_physical(
-    jacobian: &Matrix2<f64>,
-    gradients_ref: &[Vector2<f64>],
-) -> Result<Vec<Vector2<f64>>, FemError> {
+    jacobian: &Matrix2,
+    gradients_ref: &[Vector2],
+) -> Result<Vec<Vector2>, FemError> {
     let inv = jacobian
         .try_inverse()
         .ok_or(FemError::InvalidInput("singular element Jacobian"))?;
     let inv_t = inv.transpose();
-    Ok(gradients_ref.iter().map(|g| inv_t * g).collect::<Vec<_>>())
+    Ok(gradients_ref.iter().map(|g| inv_t * *g).collect::<Vec<_>>())
 }
 
-fn accumulate_mass(coo: &mut CooMatrix<f64>, nodes: &[usize], shapes: &[f64], weight: f64) {
+fn accumulate_mass(coo: &mut CooMatrix, nodes: &[usize], shapes: &[f64], weight: f64) {
     for (i_local, &i_global) in nodes.iter().enumerate() {
         for (j_local, &j_global) in nodes.iter().enumerate() {
             let value = shapes[i_local] * shapes[j_local] * weight;
@@ -53,10 +51,10 @@ fn accumulate_mass(coo: &mut CooMatrix<f64>, nodes: &[usize], shapes: &[f64], we
 }
 
 fn accumulate_stiffness(
-    coo: &mut CooMatrix<f64>,
+    coo: &mut CooMatrix,
     nodes: &[usize],
-    gradients: &[Vector2<f64>],
-    diffusion: &Matrix2<f64>,
+    gradients: &[Vector2],
+    diffusion: &Matrix2,
     weight: f64,
 ) {
     for (i_local, &i_global) in nodes.iter().enumerate() {
@@ -69,11 +67,11 @@ fn accumulate_stiffness(
 }
 
 fn accumulate_advection(
-    coo: &mut CooMatrix<f64>,
+    coo: &mut CooMatrix,
     nodes: &[usize],
     shapes: &[f64],
-    gradients: &[Vector2<f64>],
-    velocity: &Vector2<f64>,
+    gradients: &[Vector2],
+    velocity: &Vector2,
     weight: f64,
 ) {
     for (i_local, &i_global) in nodes.iter().enumerate() {
@@ -86,10 +84,10 @@ fn accumulate_advection(
 }
 
 fn accumulate_streamline_diffusion(
-    coo: &mut CooMatrix<f64>,
+    coo: &mut CooMatrix,
     nodes: &[usize],
-    gradients: &[Vector2<f64>],
-    velocity: &Vector2<f64>,
+    gradients: &[Vector2],
+    velocity: &Vector2,
     weight: f64,
     stabilization_scale: f64,
 ) {
@@ -161,7 +159,7 @@ pub fn assemble_mass_matrix(
 pub fn assemble_advection_matrix(
     mesh: &Mesh2d,
     quadrature_override: Option<&QuadratureRule>,
-    velocity: Vector2<f64>,
+    velocity: Vector2,
 ) -> Result<SparseMatrix, FemError> {
     let mut coo = CooMatrix::new(mesh.num_nodes(), mesh.num_nodes());
 
@@ -217,7 +215,7 @@ pub fn assemble_stiffness_matrix(
 pub fn assemble_stiffness_matrix_with_diffusion(
     mesh: &Mesh2d,
     quadrature_override: Option<&QuadratureRule>,
-    diffusion_factor: Option<Matrix2<f64>>,
+    diffusion_factor: Option<Matrix2>,
 ) -> Result<SparseMatrix, FemError> {
     let mut coo = CooMatrix::new(mesh.num_nodes(), mesh.num_nodes());
     let diffusion = diffusion_factor.unwrap_or_else(Matrix2::identity);
@@ -264,7 +262,7 @@ pub fn assemble_stiffness_matrix_with_diffusion(
 pub fn assemble_streamline_diffusion_matrix(
     mesh: &Mesh2d,
     quadrature_override: Option<&QuadratureRule>,
-    velocity: Vector2<f64>,
+    velocity: Vector2,
     stabilization_scale: f64,
 ) -> Result<SparseMatrix, FemError> {
     let mut coo = CooMatrix::new(mesh.num_nodes(), mesh.num_nodes());

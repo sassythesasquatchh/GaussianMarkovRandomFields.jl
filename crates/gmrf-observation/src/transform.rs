@@ -8,8 +8,8 @@
 use crate::errors::ObservationError;
 #[cfg(feature = "autodiff")]
 use gmrf_autodiff::Dual64;
+use gmrf_core::types::DenseMatrix;
 use gmrf_core::Vector;
-use nalgebra::DMatrix;
 
 /// A transformation applied to the latent field before evaluating a likelihood.
 pub trait ObservationTransform {
@@ -75,12 +75,12 @@ impl DifferentiableTransform for IdentityTransform {
 
 /// Dense linear transform `y = A * x` used for design matrices or FEM evaluation.
 pub struct LinearTransform {
-    matrix: DMatrix<f64>,
+    matrix: DenseMatrix,
 }
 
 impl LinearTransform {
     /// Create a new transform from a dense design matrix.
-    pub fn new(matrix: DMatrix<f64>) -> Self {
+    pub fn new(matrix: DenseMatrix) -> Self {
         Self { matrix }
     }
 }
@@ -96,7 +96,7 @@ impl ObservationTransform for LinearTransform {
                 "latent dimension does not match transform columns",
             ));
         }
-        Ok(&self.matrix * latent)
+        Ok(dense_matvec(&self.matrix, latent))
     }
 }
 
@@ -114,18 +114,32 @@ impl DifferentiableTransform for LinearTransform {
         }
 
         let mut output = vec![Dual64::constant(0.0, latent.len()); self.matrix.nrows()];
-        for i in 0..self.matrix.nrows() {
-            let mut value = Dual64::constant(0.0, latent.len());
-            for j in 0..self.matrix.ncols() {
-                let weight = self.matrix[(i, j)];
-                if weight != 0.0 {
-                    value = value + latent[j].clone() * weight;
+        for (j, col) in self.matrix.as_ref().col_iter().enumerate() {
+            let weight_col = col.try_as_col_major().unwrap();
+            let latent_j = latent[j].clone();
+            for (i, weight) in weight_col.as_slice().iter().enumerate() {
+                if *weight != 0.0 {
+                    output[i] = output[i].clone() + latent_j.clone() * *weight;
                 }
             }
-            output[i] = value;
         }
         Ok(output)
     }
+}
+
+fn dense_matvec(matrix: &DenseMatrix, vector: &Vector) -> Vector {
+    let mut out = Vector::zeros(matrix.nrows());
+    for (j, col) in matrix.as_ref().col_iter().enumerate() {
+        let xj = vector[j];
+        if xj == 0.0 {
+            continue;
+        }
+        let col = col.try_as_col_major().unwrap();
+        for (i, val) in col.as_slice().iter().enumerate() {
+            out[i] += *val * xj;
+        }
+    }
+    out
 }
 
 /// Chain two transforms to mimic Julia's composite observation maps.
