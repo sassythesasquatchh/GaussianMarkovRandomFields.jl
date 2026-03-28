@@ -4,6 +4,7 @@
 //! and cached factorizations for repeated solves. Sampling uses the precision factor when
 //! available, while RBMC-style variance estimation leverages Hutchinson probes as a fallback.
 
+use crate::linear::SparseRowOperator;
 use crate::precision::PrecisionStorage;
 use crate::solver::{Solver, SolverConfig};
 use crate::types::{DenseMatrix, GmrfError, SparseCholeskyFactor, SparseMatrix, Vector};
@@ -24,6 +25,14 @@ pub struct Gmrf {
 /// Exact diagonal variance decomposition for a Gaussian conditioned on linear equalities.
 #[derive(Debug, Clone)]
 pub struct ConstrainedVarianceDecomposition {
+    pub unconstrained_diag: Vector,
+    pub constrained_diag: Vector,
+    pub removed_diag: Vector,
+}
+
+/// Exact or approximate variance decomposition for transformed outputs `A x`.
+#[derive(Debug, Clone)]
+pub struct TransformedVarianceDecomposition {
     pub unconstrained_diag: Vector,
     pub constrained_diag: Vector,
     pub removed_diag: Vector,
@@ -219,6 +228,96 @@ impl Gmrf {
 
         let unconstrained = self.sample(rng)?;
         self.apply_linear_constraints(&unconstrained, constraint_matrix, constraint_rhs)
+    }
+
+    /// Compute the posterior mean after imposing linear equalities `A x = b`.
+    pub fn constrained_mean(
+        &mut self,
+        constraint_matrix: &DenseMatrix,
+        constraint_rhs: &Vector,
+    ) -> Result<Vector, GmrfError> {
+        self.validate_constraints(constraint_matrix, constraint_rhs)?;
+        if constraint_matrix.nrows() == 0 {
+            return Ok(self.mean.clone());
+        }
+
+        let unconstrained = self.mean.clone();
+        self.apply_linear_constraints(&unconstrained, constraint_matrix, constraint_rhs)
+    }
+
+    /// Compute exact marginal variance decompositions for transformed outputs `A x`.
+    pub fn exact_transformed_variance_decomposition(
+        &mut self,
+        operator: &SparseRowOperator,
+        constraint_matrix: &DenseMatrix,
+    ) -> Result<TransformedVarianceDecomposition, GmrfError> {
+        self.validate_transformed_operator(operator)?;
+        self.validate_constraint_matrix(constraint_matrix)?;
+
+        let mut unconstrained_diag = Vector::zeros(operator.nrows());
+        for (row_index, row) in operator.rows.iter().enumerate() {
+            let rhs = sparse_row_rhs(row, operator.ncols);
+            let solved = self.solve_precision_internal(&rhs)?;
+            let variance = row
+                .iter()
+                .map(|(state_index, weight)| *weight * solved[*state_index])
+                .sum::<f64>();
+            unconstrained_diag[row_index] = Self::clamp_small_negative(
+                variance,
+                rhs.norm().max(1.0),
+                "transformed marginal variance must be nonnegative",
+            )?;
+        }
+
+        let removed_diag =
+            self.transformed_constraint_correction_diag(operator, constraint_matrix)?;
+        let constrained_diag =
+            Self::subtract_removed_variance(&unconstrained_diag, &removed_diag)?;
+
+        Ok(TransformedVarianceDecomposition {
+            unconstrained_diag,
+            constrained_diag,
+            removed_diag,
+        })
+    }
+
+    /// Approximate marginal variance decompositions for transformed outputs `A x` via RBMC.
+    pub fn rbmc_transformed_variance_decomposition<R: Rng + ?Sized>(
+        &mut self,
+        operator: &SparseRowOperator,
+        constraint_matrix: &DenseMatrix,
+        num_samples: usize,
+        rng: &mut R,
+    ) -> Result<TransformedVarianceDecomposition, GmrfError> {
+        self.validate_transformed_operator(operator)?;
+        self.validate_constraint_matrix(constraint_matrix)?;
+        if num_samples == 0 {
+            return Err(GmrfError::DimensionMismatch(
+                "at least one RBMC probe is required",
+            ));
+        }
+
+        let output_dim = operator.nrows();
+        let mut unconstrained_diag = Vector::zeros(output_dim);
+        for _ in 0..num_samples {
+            let probe = Vector::from_fn(output_dim, |_| rng.sample(StandardNormal));
+            let rhs = operator.apply_transpose(&probe)?;
+            let solved = self.solve_precision_internal(&rhs)?;
+            let projected = operator.apply(&solved)?;
+            unconstrained_diag += projected.component_mul(&probe);
+        }
+        unconstrained_diag = unconstrained_diag / (num_samples as f64);
+
+        let removed_diag =
+            self.transformed_constraint_correction_diag(operator, constraint_matrix)?;
+        let constrained_diag =
+            Self::subtract_removed_variance(&unconstrained_diag, &removed_diag)?;
+
+        Ok(TransformedVarianceDecomposition {
+            unconstrained_diag,
+            constrained_diag,
+            removed_diag,
+        })
     }
 
     /// Compute exact marginal variance diagonals for a Gaussian conditioned on `A x = b`.
@@ -520,6 +619,85 @@ impl Gmrf {
         Ok(unconstrained + correction)
     }
 
+    fn validate_transformed_operator(
+        &self,
+        operator: &SparseRowOperator,
+    ) -> Result<(), GmrfError> {
+        if operator.ncols != self.dimension() {
+            return Err(GmrfError::DimensionMismatch(
+                "transformed operator column count must match latent dimension",
+            ));
+        }
+        Ok(())
+    }
+
+    fn transformed_constraint_correction_diag(
+        &mut self,
+        operator: &SparseRowOperator,
+        constraint_matrix: &DenseMatrix,
+    ) -> Result<Vector, GmrfError> {
+        if constraint_matrix.nrows() == 0 {
+            return Ok(Vector::zeros(operator.nrows()));
+        }
+
+        let covariance_times_constraint_t =
+            self.covariance_times_constraint_t(constraint_matrix)?;
+        let schur = schur_complement(constraint_matrix, &covariance_times_constraint_t);
+        let schur_factor = schur
+            .llt(Side::Lower)
+            .map_err(|_| GmrfError::SingularConstraintSystem)?;
+
+        let mut removed_diag = Vector::zeros(operator.nrows());
+        for (row_index, row) in operator.rows.iter().enumerate() {
+            let g = Vector::from_fn(constraint_matrix.nrows(), |constraint_idx| {
+                row.iter()
+                    .map(|(state_idx, value)| {
+                        *value * covariance_times_constraint_t[(*state_idx, constraint_idx)]
+                    })
+                    .sum::<f64>()
+            });
+
+            let mut solved = g.clone();
+            schur_factor.solve_in_place(solved.as_col_mut().as_mat_mut());
+            removed_diag[row_index] = Self::clamp_small_negative(
+                g.dot(&solved),
+                g.norm().max(1.0),
+                "removed transformed marginal variance must be nonnegative",
+            )?;
+        }
+
+        Ok(removed_diag)
+    }
+
+    fn subtract_removed_variance(
+        unconstrained_diag: &Vector,
+        removed_diag: &Vector,
+    ) -> Result<Vector, GmrfError> {
+        if unconstrained_diag.len() != removed_diag.len() {
+            return Err(GmrfError::DimensionMismatch(
+                "variance vectors must have the same length",
+            ));
+        }
+
+        let mut constrained_diag = Vector::zeros(unconstrained_diag.len());
+        for i in 0..unconstrained_diag.len() {
+            let scale = unconstrained_diag[i].abs().max(1.0);
+            let max_removed = unconstrained_diag[i] + Self::CONSTRAINED_VARIANCE_TOLERANCE * scale;
+            if removed_diag[i] > max_removed {
+                return Err(GmrfError::NumericalInstability(
+                    "removed transformed marginal variance exceeded unconstrained variance",
+                ));
+            }
+            constrained_diag[i] = Self::clamp_small_negative(
+                unconstrained_diag[i] - removed_diag[i].min(unconstrained_diag[i]),
+                scale,
+                "constrained transformed marginal variance must be nonnegative",
+            )?;
+        }
+
+        Ok(constrained_diag)
+    }
+
     fn exact_inverse_diag(&mut self) -> Result<Vector, GmrfError> {
         if let Some(q_factor) = &self.q_factor {
             let n = q_factor.dimension();
@@ -605,6 +783,14 @@ fn dense_row_as_vector(matrix: &DenseMatrix, row: usize) -> Vector {
     out
 }
 
+fn sparse_row_rhs(row: &[(usize, f64)], dimension: usize) -> Vector {
+    let mut rhs = Vector::zeros(dimension);
+    for (col, value) in row {
+        rhs[*col] = *value;
+    }
+    rhs
+}
+
 fn schur_complement(
     constraint_matrix: &DenseMatrix,
     covariance_times_constraint_t: &DenseMatrix,
@@ -624,7 +810,7 @@ fn schur_complement(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::linear::MatrixOperator;
+    use crate::linear::{MatrixOperator, SparseRowOperator};
     use crate::types::CooMatrix;
     use rand::rngs::StdRng;
     use rand::thread_rng;
@@ -904,6 +1090,75 @@ mod tests {
 
         assert_eq!(correction.len(), 3);
         assert!(correction.iter().all(|value| value.abs() < 1e-12));
+    }
+
+    #[test]
+    fn constrained_mean_matches_identity_formula() {
+        let precision = identity_precision(2);
+        let mut gmrf =
+            Gmrf::from_mean_and_precision(Vector::from_vec(vec![1.0, -1.0]), precision).unwrap();
+        let constraints = DenseMatrix::from_fn(1, 2, |_, j| if j == 0 { 1.0 } else { -1.0 });
+        let rhs = Vector::from_vec(vec![0.25]);
+
+        let mean = gmrf.constrained_mean(&constraints, &rhs).unwrap();
+
+        assert!((mean[0] - mean[1] - 0.25).abs() < 1e-12);
+        assert!((mean[0] - 0.125).abs() < 1e-12);
+        assert!((mean[1] + 0.125).abs() < 1e-12);
+    }
+
+    #[test]
+    fn exact_transformed_variance_decomposition_matches_identity_operator() {
+        let precision = identity_precision(2);
+        let constraints = DenseMatrix::from_fn(1, 2, |_, j| if j == 0 { 1.0 } else { 2.0 });
+        let operator = SparseRowOperator::identity(2);
+        let mut gmrf = Gmrf::from_mean_and_precision(Vector::zeros(2), precision).unwrap();
+
+        let transformed = gmrf
+            .exact_transformed_variance_decomposition(&operator, &constraints)
+            .unwrap();
+        let latent = gmrf
+            .exact_constrained_variance_decomposition(&constraints)
+            .unwrap();
+
+        assert!((transformed.unconstrained_diag - latent.unconstrained_diag).norm() < 1e-12);
+        assert!((transformed.constrained_diag - latent.constrained_diag).norm() < 1e-12);
+        assert!((transformed.removed_diag - latent.removed_diag).norm() < 1e-12);
+    }
+
+    #[test]
+    fn exact_transformed_variance_decomposition_matches_manual_linear_form() {
+        let precision = identity_precision(2);
+        let constraints = DenseMatrix::zeros(0, 2);
+        let operator = SparseRowOperator::new(2, vec![vec![(0, 1.0), (1, -1.0)]]).unwrap();
+        let mut gmrf = Gmrf::from_mean_and_precision(Vector::zeros(2), precision).unwrap();
+
+        let transformed = gmrf
+            .exact_transformed_variance_decomposition(&operator, &constraints)
+            .unwrap();
+
+        assert_eq!(transformed.unconstrained_diag.len(), 1);
+        assert!((transformed.unconstrained_diag[0] - 2.0).abs() < 1e-12);
+        assert!((transformed.constrained_diag[0] - 2.0).abs() < 1e-12);
+        assert!(transformed.removed_diag[0].abs() < 1e-12);
+    }
+
+    #[test]
+    fn rbmc_transformed_variance_decomposition_runs() {
+        let precision = identity_precision(2);
+        let constraints = DenseMatrix::zeros(0, 2);
+        let operator = SparseRowOperator::new(2, vec![vec![(0, 1.0)], vec![(1, 1.0)]]).unwrap();
+        let mut gmrf = Gmrf::from_mean_and_precision(Vector::zeros(2), precision).unwrap();
+        let mut rng = StdRng::seed_from_u64(11);
+
+        let transformed = gmrf
+            .rbmc_transformed_variance_decomposition(&operator, &constraints, 32, &mut rng)
+            .unwrap();
+
+        assert_eq!(transformed.unconstrained_diag.len(), 2);
+        assert!(transformed.unconstrained_diag.iter().all(|value| value.is_finite()));
+        assert!(transformed.constrained_diag.iter().all(|value| value.is_finite()));
+        assert!(transformed.removed_diag.iter().all(|value| value.is_finite()));
     }
 
     #[test]

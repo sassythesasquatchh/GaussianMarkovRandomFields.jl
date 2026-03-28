@@ -4,11 +4,13 @@
 //! thin wrappers and helpers so downstream crates don't depend on faer directly.
 
 use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::linalg::solvers::Solve;
 use faer::sparse::linalg::cholesky::supernodal::SupernodalLltRef;
 use faer::sparse::linalg::cholesky::{
     factorize_symbolic_cholesky, CholeskySymbolicParams, LltRef, SymbolicCholesky,
     SymbolicCholeskyRaw, SymmetricOrdering,
 };
+use faer::sparse::linalg::solvers::Lu as FaerSparseLu;
 use faer::sparse::{SparseColMat, SparseColMatRef, Triplet};
 use faer::Mat;
 use faer::{get_global_parallelism, Conj, Side, Unbind};
@@ -126,6 +128,11 @@ impl SparseMatrix {
     pub fn cholesky_factor(&self) -> Result<SparseCholeskyFactor, GmrfError> {
         self.cholesky_sqrt_lower()
     }
+
+    /// Compute a sparse LU factorization with partial row pivoting.
+    pub fn lu_factor(&self) -> Result<SparseLuFactor, GmrfError> {
+        SparseLuFactor::factorize(self)
+    }
 }
 
 /// Sparse Cholesky factorization with permutation support.
@@ -133,6 +140,13 @@ impl SparseMatrix {
 pub struct SparseCholeskyFactor {
     symbolic: SymbolicCholesky<usize>,
     values: Vec<f64>,
+}
+
+/// Sparse LU factorization with partial row pivoting.
+#[derive(Debug, Clone)]
+pub struct SparseLuFactor {
+    dimension: usize,
+    factor: FaerSparseLu<usize, f64>,
 }
 
 impl SparseCholeskyFactor {
@@ -291,6 +305,47 @@ impl SparseCholeskyFactor {
             }
         }
         Ok(2.0 * acc)
+    }
+}
+
+impl SparseLuFactor {
+    /// Compute a sparse LU factorization of `matrix`.
+    pub fn factorize(matrix: &SparseMatrix) -> Result<Self, GmrfError> {
+        if matrix.nrows() != matrix.ncols() {
+            return Err(GmrfError::DimensionMismatch("matrix must be square"));
+        }
+
+        let factor = matrix
+            .as_ref()
+            .sp_lu()
+            .map_err(|_| GmrfError::SingularMatrix)?;
+        Ok(Self {
+            dimension: matrix.nrows(),
+            factor,
+        })
+    }
+
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    /// Solve `A x = rhs` in-place using the factorization.
+    pub fn solve_in_place(&self, rhs: &mut Vector) -> Result<(), GmrfError> {
+        if rhs.len() != self.dimension {
+            return Err(GmrfError::DimensionMismatch(
+                "right hand side length must match matrix dimension",
+            ));
+        }
+
+        self.factor.solve_in_place(rhs.as_col_mut().as_mat_mut());
+        Ok(())
+    }
+
+    /// Solve `A x = rhs`, returning the solution.
+    pub fn solve(&self, rhs: &Vector) -> Result<Vector, GmrfError> {
+        let mut out = rhs.clone();
+        self.solve_in_place(&mut out)?;
+        Ok(out)
     }
 }
 
@@ -671,6 +726,10 @@ pub enum GmrfError {
     #[error("precision factorization is required for this operation")]
     MissingPrecisionSqrt,
 
+    /// A sparse matrix factorization failed because the matrix was singular.
+    #[error("matrix is singular")]
+    SingularMatrix,
+
     /// Factorization failed because the precision was not positive definite.
     #[error("precision matrix is not positive definite")]
     NonPositiveDefinite,
@@ -707,5 +766,48 @@ mod tests {
         factor.solve_in_place(&mut solved).unwrap();
         let diff = (solved - x).norm();
         assert!(diff < 1e-10);
+    }
+
+    #[test]
+    fn lu_factor_solves_nonsymmetric_linear_system() {
+        let mut coo = CooMatrix::new(3, 3);
+        coo.push(0, 0, 0.0);
+        coo.push(0, 1, 2.0);
+        coo.push(0, 2, 1.0);
+        coo.push(1, 0, 1.0);
+        coo.push(1, 1, 1.0);
+        coo.push(2, 0, 2.0);
+        coo.push(2, 2, 1.0);
+        let a = SparseMatrix::from(&coo);
+        let factor = a.lu_factor().unwrap();
+
+        let x = Vector::from_vec(vec![1.0, -2.0, 0.5]);
+        let b = a.mul_vec(&x);
+        let solved = factor.solve(&b).unwrap();
+        assert!((solved - x).norm() < 1e-10);
+    }
+
+    #[test]
+    fn lu_factor_reuses_factorization_across_multiple_rhs() {
+        let mut coo = CooMatrix::new(3, 3);
+        coo.push(0, 0, 4.0);
+        coo.push(0, 1, -1.0);
+        coo.push(1, 0, 2.0);
+        coo.push(1, 1, 3.0);
+        coo.push(1, 2, 1.0);
+        coo.push(2, 0, 1.0);
+        coo.push(2, 2, 2.0);
+        let a = SparseMatrix::from(&coo);
+        let factor = a.lu_factor().unwrap();
+
+        let x1 = Vector::from_vec(vec![0.25, -1.0, 2.0]);
+        let x2 = Vector::from_vec(vec![-0.5, 1.5, 0.75]);
+        let b1 = a.mul_vec(&x1);
+        let b2 = a.mul_vec(&x2);
+
+        let solved1 = factor.solve(&b1).unwrap();
+        let solved2 = factor.solve(&b2).unwrap();
+        assert!((solved1 - x1).norm() < 1e-10);
+        assert!((solved2 - x2).norm() < 1e-10);
     }
 }

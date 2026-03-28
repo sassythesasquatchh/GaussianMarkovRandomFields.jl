@@ -5,7 +5,7 @@
 //! precision operators, preconditioners, and composed transforms without forcing
 //! a particular backend.
 
-use crate::types::{CooMatrix, GmrfError, SparseMatrix, Vector};
+use crate::types::{CooMatrix, DenseMatrix, GmrfError, SparseMatrix, Vector};
 
 /// A trait representing a generic linear operator `y = A * x`.
 pub trait LinearOperator: Send + Sync {
@@ -65,6 +65,182 @@ impl<A: LinearOperator, B: LinearOperator> LinearOperator for ComposedOperator<A
     fn apply(&self, x: &Vector) -> Result<Vector, GmrfError> {
         let intermediate = self.first.apply(x)?;
         self.second.apply(&intermediate)
+    }
+}
+
+/// Sparse row-wise operator for rectangular transforms `y = A x`.
+///
+/// This is intentionally lightweight and backend-agnostic. It is primarily used for
+/// transformed variance calculations where each output row is a sparse linear functional
+/// over the latent state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SparseRowOperator {
+    pub ncols: usize,
+    pub rows: Vec<Vec<(usize, f64)>>,
+}
+
+impl SparseRowOperator {
+    /// Build an operator from explicit sparse rows.
+    pub fn new(ncols: usize, rows: Vec<Vec<(usize, f64)>>) -> Result<Self, GmrfError> {
+        for row in &rows {
+            for (col, value) in row {
+                if *col >= ncols {
+                    return Err(GmrfError::DimensionMismatch(
+                        "sparse row operator column exceeds input dimension",
+                    ));
+                }
+                if !value.is_finite() {
+                    return Err(GmrfError::NumericalInstability(
+                        "sparse row operator contains non-finite entries",
+                    ));
+                }
+            }
+        }
+
+        Ok(Self { ncols, rows })
+    }
+
+    /// Build an operator from a sparse matrix, preserving the row structure.
+    pub fn from_sparse_matrix(matrix: &SparseMatrix) -> Result<Self, GmrfError> {
+        let mut rows = vec![Vec::new(); matrix.nrows()];
+        for (row, col, value) in matrix.triplet_iter() {
+            if *value != 0.0 {
+                rows[row].push((col, *value));
+            }
+        }
+        Self::new(matrix.ncols(), rows)
+    }
+
+    /// Build an operator from a dense matrix, dropping entries with magnitude `<= drop_tolerance`.
+    pub fn from_dense_matrix(
+        matrix: &DenseMatrix,
+        drop_tolerance: f64,
+    ) -> Result<Self, GmrfError> {
+        if !drop_tolerance.is_finite() {
+            return Err(GmrfError::NumericalInstability(
+                "dense-to-row conversion drop tolerance must be finite",
+            ));
+        }
+
+        let tol = drop_tolerance.abs();
+        let mut rows = Vec::with_capacity(matrix.nrows());
+        for row in 0..matrix.nrows() {
+            let mut entries = Vec::new();
+            for col in 0..matrix.ncols() {
+                let value = matrix[(row, col)];
+                if value.abs() > tol {
+                    entries.push((col, value));
+                }
+            }
+            rows.push(entries);
+        }
+        Self::new(matrix.ncols(), rows)
+    }
+
+    /// Identity operator on `size` coordinates.
+    pub fn identity(size: usize) -> Self {
+        Self {
+            ncols: size,
+            rows: (0..size).map(|i| vec![(i, 1.0)]).collect(),
+        }
+    }
+
+    /// Number of output rows.
+    pub fn nrows(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Apply the operator.
+    pub fn apply(&self, input: &Vector) -> Result<Vector, GmrfError> {
+        if input.len() != self.ncols {
+            return Err(GmrfError::DimensionMismatch(
+                "operator input length must match column dimension",
+            ));
+        }
+
+        Ok(Vector::from_iterator(
+            self.nrows(),
+            self.rows.iter().map(|row| {
+                row.iter()
+                    .map(|(col, value)| *value * input[*col])
+                    .sum::<f64>()
+            }),
+        ))
+    }
+
+    /// Apply the transpose operator.
+    pub fn apply_transpose(&self, input: &Vector) -> Result<Vector, GmrfError> {
+        if input.len() != self.nrows() {
+            return Err(GmrfError::DimensionMismatch(
+                "transpose input length must match row dimension",
+            ));
+        }
+
+        let mut out = Vector::zeros(self.ncols);
+        for (row_index, row) in self.rows.iter().enumerate() {
+            let weight = input[row_index];
+            if weight == 0.0 {
+                continue;
+            }
+            for (col, value) in row {
+                out[*col] += weight * *value;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Stack operators vertically.
+    pub fn stack(operators: &[&SparseRowOperator]) -> Result<Self, GmrfError> {
+        let Some(first) = operators.first() else {
+            return Err(GmrfError::DimensionMismatch(
+                "at least one operator is required for stacking",
+            ));
+        };
+        let ncols = first.ncols;
+        if operators.iter().any(|operator| operator.ncols != ncols) {
+            return Err(GmrfError::DimensionMismatch(
+                "all stacked operators must have the same column dimension",
+            ));
+        }
+
+        let mut rows = Vec::new();
+        for operator in operators {
+            rows.extend(operator.rows.iter().cloned());
+        }
+        Ok(Self { ncols, rows })
+    }
+
+    /// Compose two operators `left(right(x))`.
+    pub fn compose(
+        left: &SparseRowOperator,
+        right: &SparseRowOperator,
+    ) -> Result<Self, GmrfError> {
+        if left.ncols != right.nrows() {
+            return Err(GmrfError::DimensionMismatch(
+                "operator dimensions are incompatible for composition",
+            ));
+        }
+
+        let mut rows = Vec::with_capacity(left.nrows());
+        for left_row in &left.rows {
+            let mut combined = std::collections::BTreeMap::<usize, f64>::new();
+            for (intermediate, weight) in left_row {
+                for (col, value) in &right.rows[*intermediate] {
+                    *combined.entry(*col).or_insert(0.0) += *weight * *value;
+                }
+            }
+            rows.push(
+                combined
+                    .into_iter()
+                    .filter_map(|(col, value)| (value != 0.0).then_some((col, value)))
+                    .collect(),
+            );
+        }
+
+        Ok(Self {
+            ncols: right.ncols,
+            rows,
+        })
     }
 }
 
@@ -160,5 +336,54 @@ mod tests {
         let v = Vector::from_vec(vec![1.0; 6]);
         let out = kron.apply(&v).unwrap();
         assert_eq!(out.len(), 6);
+    }
+
+    #[test]
+    fn sparse_row_operator_stacks_and_applies() {
+        let left = SparseRowOperator::new(3, vec![vec![(0, 1.0), (2, -1.0)]]).unwrap();
+        let right = SparseRowOperator::new(3, vec![vec![(1, 2.0)]]).unwrap();
+        let stacked = SparseRowOperator::stack(&[&left, &right]).unwrap();
+
+        let input = Vector::from_vec(vec![3.0, 4.0, 1.0]);
+        let output = stacked.apply(&input).unwrap();
+
+        assert_eq!(output.len(), 2);
+        assert!((output[0] - 2.0).abs() < 1e-12);
+        assert!((output[1] - 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn sparse_row_operator_compose_matches_manual() {
+        let right = SparseRowOperator::new(
+            3,
+            vec![
+                vec![(0, 1.0), (1, 2.0)],
+                vec![(1, -1.0), (2, 0.5)],
+            ],
+        )
+        .unwrap();
+        let left = SparseRowOperator::new(2, vec![vec![(0, 2.0)], vec![(1, -3.0)]]).unwrap();
+
+        let composed = SparseRowOperator::compose(&left, &right).unwrap();
+        let input = Vector::from_vec(vec![1.0, -2.0, 4.0]);
+        let manual = left.apply(&right.apply(&input).unwrap()).unwrap();
+        let actual = composed.apply(&input).unwrap();
+
+        assert!((manual - actual).norm() < 1e-12);
+    }
+
+    #[test]
+    fn sparse_row_operator_apply_transpose_matches_manual() {
+        let operator = SparseRowOperator::new(
+            3,
+            vec![vec![(0, 1.0), (2, -2.0)], vec![(1, 0.5), (2, 3.0)]],
+        )
+        .unwrap();
+        let weights = Vector::from_vec(vec![2.0, -1.0]);
+        let applied = operator.apply_transpose(&weights).unwrap();
+
+        assert!((applied[0] - 2.0).abs() < 1e-12);
+        assert!((applied[1] + 0.5).abs() < 1e-12);
+        assert!((applied[2] + 7.0).abs() < 1e-12);
     }
 }
