@@ -9,6 +9,7 @@ pub mod linear;
 pub mod observation;
 pub mod precision;
 pub mod solver;
+pub mod spacetime;
 pub mod types;
 pub mod vtk;
 
@@ -23,5 +24,9 @@ pub use observation::{
 };
 pub use precision::{PrecisionOperator, PrecisionStorage};
 pub use solver::{JacobiPreconditioner, Solver, SolverAlgorithm, SolverConfig};
+pub use spacetime::{
+    add_sparse_blocks, sparse_from_core, sparse_to_core, BlockTridiagonalPrecision,
+    StackedObservationSystem, TimeStackedObservationBuilder,
+};
 pub use types::{GmrfError, SparseCholeskyFactor, SparseLuFactor, SparseMatrix, Vector};
 pub use vtk::write_structured_points;

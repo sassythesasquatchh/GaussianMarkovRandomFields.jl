@@ -1,0 +1,380 @@
+//! Structured spacetime precision and observation builders.
+
+use crate::observation::add_sparse;
+use crate::types::{CooMatrix, GmrfError, SparseMatrix, Vector};
+use feg_core::SparseTripletMatrix;
+
+#[derive(Debug, Clone)]
+pub struct BlockTridiagonalPrecision {
+    block_size: usize,
+    diagonal_blocks: Vec<SparseMatrix>,
+    lower_blocks: Vec<SparseMatrix>,
+}
+
+impl BlockTridiagonalPrecision {
+    pub fn new(
+        diagonal_blocks: Vec<SparseMatrix>,
+        lower_blocks: Vec<SparseMatrix>,
+    ) -> Result<Self, GmrfError> {
+        let Some(first) = diagonal_blocks.first() else {
+            return Err(GmrfError::DimensionMismatch(
+                "block-tridiagonal precision requires at least one diagonal block",
+            ));
+        };
+        if first.nrows() != first.ncols() {
+            return Err(GmrfError::DimensionMismatch(
+                "diagonal blocks must be square",
+            ));
+        }
+        let block_size = first.nrows();
+        if diagonal_blocks
+            .iter()
+            .any(|block| block.nrows() != block_size || block.ncols() != block_size)
+        {
+            return Err(GmrfError::DimensionMismatch(
+                "all diagonal blocks must share the same square dimension",
+            ));
+        }
+        if lower_blocks.len() + 1 != diagonal_blocks.len() {
+            return Err(GmrfError::DimensionMismatch(
+                "lower block count must be exactly one less than the diagonal block count",
+            ));
+        }
+        if lower_blocks
+            .iter()
+            .any(|block| block.nrows() != block_size || block.ncols() != block_size)
+        {
+            return Err(GmrfError::DimensionMismatch(
+                "all off-diagonal blocks must match the diagonal block size",
+            ));
+        }
+
+        Ok(Self {
+            block_size,
+            diagonal_blocks,
+            lower_blocks,
+        })
+    }
+
+    pub fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    pub fn block_count(&self) -> usize {
+        self.diagonal_blocks.len()
+    }
+
+    pub fn dimension(&self) -> usize {
+        self.block_size * self.block_count()
+    }
+
+    pub fn diagonal_blocks(&self) -> &[SparseMatrix] {
+        &self.diagonal_blocks
+    }
+
+    pub fn lower_blocks(&self) -> &[SparseMatrix] {
+        &self.lower_blocks
+    }
+
+    pub fn to_sparse(&self) -> SparseMatrix {
+        let dimension = self.dimension();
+        let mut coo = CooMatrix::new(dimension, dimension);
+        for (block_index, block) in self.diagonal_blocks.iter().enumerate() {
+            let offset = block_index * self.block_size;
+            for (row, col, value) in block.triplet_iter() {
+                coo.push(offset + row, offset + col, *value);
+            }
+        }
+        for (block_index, block) in self.lower_blocks.iter().enumerate() {
+            let row_offset = (block_index + 1) * self.block_size;
+            let col_offset = block_index * self.block_size;
+            for (row, col, value) in block.triplet_iter() {
+                coo.push(row_offset + row, col_offset + col, *value);
+                coo.push(col_offset + col, row_offset + row, *value);
+            }
+        }
+        SparseMatrix::from(&coo)
+    }
+
+    pub fn cholesky_sqrt_lower(&self) -> Result<crate::SparseCholeskyFactor, GmrfError> {
+        self.to_sparse().cholesky_sqrt_lower()
+    }
+
+    pub fn solve(&self, rhs: &Vector) -> Result<Vector, GmrfError> {
+        let precision = self.to_sparse();
+        let mut solver = crate::Solver::default();
+        solver.solve_matrix(&precision, rhs)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StackedObservationSystem {
+    pub matrix: SparseMatrix,
+    pub observations: Vector,
+    pub bias: Vector,
+    pub noise_variance: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TimeStackedObservationBuilder {
+    slice_count: usize,
+    slice_dimension: usize,
+    rows: Vec<(usize, usize, f64)>,
+    observations: Vec<f64>,
+    bias: Vec<f64>,
+}
+
+impl TimeStackedObservationBuilder {
+    pub fn new(slice_count: usize, slice_dimension: usize) -> Self {
+        Self {
+            slice_count,
+            slice_dimension,
+            rows: Vec::new(),
+            observations: Vec::new(),
+            bias: Vec::new(),
+        }
+    }
+
+    pub fn push_slice_block(
+        &mut self,
+        slice_index: usize,
+        block: &SparseMatrix,
+        observations: &[f64],
+        bias: &[f64],
+        variance: f64,
+    ) -> Result<(), GmrfError> {
+        self.validate_slice_block(slice_index, block, observations, bias, variance)?;
+        let scale = variance.sqrt().recip();
+        let row_offset = self.observations.len();
+        let col_offset = slice_index * self.slice_dimension;
+        for (row, col, value) in block.triplet_iter() {
+            self.rows.push((row_offset + row, col_offset + col, *value * scale));
+        }
+        self.observations
+            .extend(observations.iter().map(|value| *value * scale));
+        self.bias.extend(bias.iter().map(|value| *value * scale));
+        Ok(())
+    }
+
+    pub fn push_transition_block(
+        &mut self,
+        left_slice: usize,
+        left_block: &SparseMatrix,
+        right_block: &SparseMatrix,
+        observations: &[f64],
+        bias: &[f64],
+        variance: f64,
+    ) -> Result<(), GmrfError> {
+        if left_slice + 1 >= self.slice_count {
+            return Err(GmrfError::DimensionMismatch(
+                "transition block must fit inside the time grid",
+            ));
+        }
+        self.validate_block_rows(left_block, observations, bias, variance)?;
+        if right_block.nrows() != left_block.nrows() || right_block.ncols() != self.slice_dimension {
+            return Err(GmrfError::DimensionMismatch(
+                "right transition block must match the left block row count and slice dimension",
+            ));
+        }
+        let scale = variance.sqrt().recip();
+        let row_offset = self.observations.len();
+        let left_offset = left_slice * self.slice_dimension;
+        let right_offset = (left_slice + 1) * self.slice_dimension;
+        for (row, col, value) in left_block.triplet_iter() {
+            self.rows
+                .push((row_offset + row, left_offset + col, *value * scale));
+        }
+        for (row, col, value) in right_block.triplet_iter() {
+            self.rows
+                .push((row_offset + row, right_offset + col, *value * scale));
+        }
+        self.observations
+            .extend(observations.iter().map(|value| *value * scale));
+        self.bias.extend(bias.iter().map(|value| *value * scale));
+        Ok(())
+    }
+
+    pub fn finish(self) -> StackedObservationSystem {
+        let mut coo = CooMatrix::new(
+            self.observations.len(),
+            self.slice_count * self.slice_dimension,
+        );
+        for (row, col, value) in self.rows {
+            coo.push(row, col, value);
+        }
+        StackedObservationSystem {
+            matrix: SparseMatrix::from(&coo),
+            observations: Vector::from_vec(self.observations),
+            bias: Vector::from_vec(self.bias),
+            noise_variance: 1.0,
+        }
+    }
+
+    fn validate_slice_block(
+        &self,
+        slice_index: usize,
+        block: &SparseMatrix,
+        observations: &[f64],
+        bias: &[f64],
+        variance: f64,
+    ) -> Result<(), GmrfError> {
+        if slice_index >= self.slice_count {
+            return Err(GmrfError::DimensionMismatch(
+                "slice block must fit inside the time grid",
+            ));
+        }
+        self.validate_block_rows(block, observations, bias, variance)?;
+        if block.ncols() != self.slice_dimension {
+            return Err(GmrfError::DimensionMismatch(
+                "slice block column count must match the slice dimension",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_block_rows(
+        &self,
+        block: &SparseMatrix,
+        observations: &[f64],
+        bias: &[f64],
+        variance: f64,
+    ) -> Result<(), GmrfError> {
+        if block.nrows() != observations.len() || block.nrows() != bias.len() {
+            return Err(GmrfError::DimensionMismatch(
+                "observation rows, observations, and bias lengths must match",
+            ));
+        }
+        if !variance.is_finite() || variance <= 0.0 {
+            return Err(GmrfError::DimensionMismatch(
+                "observation variance must be finite and positive",
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn sparse_from_core(matrix: &SparseTripletMatrix) -> SparseMatrix {
+    let mut coo = CooMatrix::new(matrix.nrows(), matrix.ncols());
+    for (row, col, value) in matrix.triplet_iter() {
+        coo.push(row, col, value);
+    }
+    SparseMatrix::from(&coo)
+}
+
+pub fn sparse_to_core(matrix: &SparseMatrix) -> SparseTripletMatrix {
+    SparseTripletMatrix::from_triplets(
+        matrix.nrows(),
+        matrix.ncols(),
+        matrix.triplet_iter().map(|(row, col, value)| feg_core::SparseTriplet {
+            row,
+            col,
+            value: *value,
+        }),
+    )
+}
+
+pub fn add_sparse_blocks(lhs: &SparseMatrix, rhs: &SparseMatrix) -> SparseMatrix {
+    add_sparse(lhs, rhs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dense_from_sparse(matrix: &SparseMatrix) -> Vec<Vec<f64>> {
+        let mut dense = vec![vec![0.0; matrix.ncols()]; matrix.nrows()];
+        for (row, col, value) in matrix.triplet_iter() {
+            dense[row][col] += *value;
+        }
+        dense
+    }
+
+    #[test]
+    fn block_tridiagonal_materializes_expected_sparse_matrix() {
+        let diag0 = sparse_from_core(&SparseTripletMatrix::from_triplets(
+            2,
+            2,
+            [
+                feg_core::SparseTriplet {
+                    row: 0,
+                    col: 0,
+                    value: 2.0,
+                },
+                feg_core::SparseTriplet {
+                    row: 1,
+                    col: 1,
+                    value: 3.0,
+                },
+            ],
+        ));
+        let diag1 = sparse_from_core(&SparseTripletMatrix::from_triplets(
+            2,
+            2,
+            [
+                feg_core::SparseTriplet {
+                    row: 0,
+                    col: 0,
+                    value: 5.0,
+                },
+                feg_core::SparseTriplet {
+                    row: 1,
+                    col: 1,
+                    value: 7.0,
+                },
+            ],
+        ));
+        let lower = sparse_from_core(&SparseTripletMatrix::from_triplets(
+            2,
+            2,
+            [feg_core::SparseTriplet {
+                row: 0,
+                col: 1,
+                value: -1.5,
+            }],
+        ));
+        let precision = BlockTridiagonalPrecision::new(vec![diag0, diag1], vec![lower]).unwrap();
+        let dense = dense_from_sparse(&precision.to_sparse());
+        assert_eq!(
+            dense,
+            vec![
+                vec![2.0, 0.0, 0.0, 0.0],
+                vec![0.0, 3.0, -1.5, 0.0],
+                vec![0.0, -1.5, 5.0, 0.0],
+                vec![0.0, 0.0, 0.0, 7.0],
+            ]
+        );
+    }
+
+    #[test]
+    fn stacked_observation_builder_scales_rows_by_variance() {
+        let block = sparse_from_core(&SparseTripletMatrix::from_triplets(
+            2,
+            2,
+            [
+                feg_core::SparseTriplet {
+                    row: 0,
+                    col: 0,
+                    value: 1.0,
+                },
+                feg_core::SparseTriplet {
+                    row: 1,
+                    col: 1,
+                    value: 2.0,
+                },
+            ],
+        ));
+        let mut builder = TimeStackedObservationBuilder::new(2, 2);
+        builder
+            .push_slice_block(1, &block, &[3.0, 4.0], &[1.0, -1.0], 4.0)
+            .unwrap();
+        let system = builder.finish();
+        let dense = dense_from_sparse(&system.matrix);
+        assert_eq!(
+            dense,
+            vec![vec![0.0, 0.0, 0.5, 0.0], vec![0.0, 0.0, 0.0, 1.0]]
+        );
+        assert_eq!(system.observations.as_slice(), &[1.5, 2.0]);
+        assert_eq!(system.bias.as_slice(), &[0.5, -0.5]);
+        assert_eq!(system.noise_variance, 1.0);
+    }
+}

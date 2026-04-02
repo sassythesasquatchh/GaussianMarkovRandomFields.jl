@@ -8,6 +8,7 @@ description = "Core Gaussian Markov Random Field types and solvers for the Rust 
 repository = "https://github.com/JuliaGaussianProcesses/GaussianMarkovRandomFields.jl"
 
 [dependencies]
+feg-core = { path = "../../../crates/feg-core" }
 faer = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
