@@ -191,6 +191,11 @@ impl SparseCholeskyFactor {
         self.symbolic.nrows()
     }
 
+    /// Number of stored numeric entries in the Cholesky factor.
+    pub fn nnz(&self) -> usize {
+        self.values.len()
+    }
+
     /// Solve `A x = rhs` in-place using the factorization.
     pub fn solve_in_place(&self, rhs: &mut Vector) -> Result<(), GmrfError> {
         if rhs.len() != self.dimension() {
@@ -766,6 +771,23 @@ mod tests {
         factor.solve_in_place(&mut solved).unwrap();
         let diff = (solved - x).norm();
         assert!(diff < 1e-10);
+    }
+
+    #[test]
+    fn cholesky_factor_reports_numeric_nnz() {
+        let mut coo = CooMatrix::new(3, 3);
+        coo.push(0, 0, 4.0);
+        coo.push(0, 1, 1.0);
+        coo.push(1, 0, 1.0);
+        coo.push(1, 1, 3.0);
+        coo.push(1, 2, 1.0);
+        coo.push(2, 1, 1.0);
+        coo.push(2, 2, 2.0);
+        let q = SparseMatrix::from(&coo);
+
+        let factor = q.cholesky_sqrt_lower().unwrap();
+        assert_eq!(factor.dimension(), 3);
+        assert_eq!(factor.nnz(), 5);
     }
 
     #[test]

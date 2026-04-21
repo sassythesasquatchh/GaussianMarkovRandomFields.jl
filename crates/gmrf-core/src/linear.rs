@@ -112,10 +112,7 @@ impl SparseRowOperator {
     }
 
     /// Build an operator from a dense matrix, dropping entries with magnitude `<= drop_tolerance`.
-    pub fn from_dense_matrix(
-        matrix: &DenseMatrix,
-        drop_tolerance: f64,
-    ) -> Result<Self, GmrfError> {
+    pub fn from_dense_matrix(matrix: &DenseMatrix, drop_tolerance: f64) -> Result<Self, GmrfError> {
         if !drop_tolerance.is_finite() {
             return Err(GmrfError::NumericalInstability(
                 "dense-to-row conversion drop tolerance must be finite",
@@ -211,10 +208,7 @@ impl SparseRowOperator {
     }
 
     /// Compose two operators `left(right(x))`.
-    pub fn compose(
-        left: &SparseRowOperator,
-        right: &SparseRowOperator,
-    ) -> Result<Self, GmrfError> {
+    pub fn compose(left: &SparseRowOperator, right: &SparseRowOperator) -> Result<Self, GmrfError> {
         if left.ncols != right.nrows() {
             return Err(GmrfError::DimensionMismatch(
                 "operator dimensions are incompatible for composition",
@@ -354,14 +348,9 @@ mod tests {
 
     #[test]
     fn sparse_row_operator_compose_matches_manual() {
-        let right = SparseRowOperator::new(
-            3,
-            vec![
-                vec![(0, 1.0), (1, 2.0)],
-                vec![(1, -1.0), (2, 0.5)],
-            ],
-        )
-        .unwrap();
+        let right =
+            SparseRowOperator::new(3, vec![vec![(0, 1.0), (1, 2.0)], vec![(1, -1.0), (2, 0.5)]])
+                .unwrap();
         let left = SparseRowOperator::new(2, vec![vec![(0, 2.0)], vec![(1, -3.0)]]).unwrap();
 
         let composed = SparseRowOperator::compose(&left, &right).unwrap();
@@ -374,11 +363,9 @@ mod tests {
 
     #[test]
     fn sparse_row_operator_apply_transpose_matches_manual() {
-        let operator = SparseRowOperator::new(
-            3,
-            vec![vec![(0, 1.0), (2, -2.0)], vec![(1, 0.5), (2, 3.0)]],
-        )
-        .unwrap();
+        let operator =
+            SparseRowOperator::new(3, vec![vec![(0, 1.0), (2, -2.0)], vec![(1, 0.5), (2, 3.0)]])
+                .unwrap();
         let weights = Vector::from_vec(vec![2.0, -1.0]);
         let applied = operator.apply_transpose(&weights).unwrap();
 

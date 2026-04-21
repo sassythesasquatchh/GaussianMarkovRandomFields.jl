@@ -1,4 +1,7 @@
-use gmrf_core::observation::{apply_gaussian_observations, ht_weighted_h};
+use gmrf_core::observation::{
+    apply_gaussian_observations, apply_gaussian_observations_with_precision,
+    ht_precision_weighted_h, ht_weighted_h,
+};
 use gmrf_core::types::{CooMatrix, SparseMatrix, Vector};
 
 fn dense_from_sparse(mat: &SparseMatrix) -> Vec<Vec<f64>> {
@@ -135,6 +138,49 @@ fn observations_support_affine_bias() {
         vec![0.5 + inv_var * 1.0, 0.0],
         vec![0.0, 0.25 + inv_var * 4.0],
     ];
+    let actual_posterior = dense_from_sparse(&posterior);
+    assert_dense_close(&actual_posterior, &expected_posterior);
+}
+
+#[test]
+fn precision_weighted_observations_match_manual_sparse_algebra() {
+    let mut h_coo = CooMatrix::new(2, 2);
+    h_coo.push(0, 0, 1.0);
+    h_coo.push(1, 0, -1.0);
+    h_coo.push(1, 1, 2.0);
+    let h = SparseMatrix::from(&h_coo);
+
+    let mut prior_coo = CooMatrix::new(2, 2);
+    prior_coo.push(0, 0, 1.0);
+    prior_coo.push(1, 1, 3.0);
+    let prior = SparseMatrix::from(&prior_coo);
+
+    let mut precision_coo = CooMatrix::new(2, 2);
+    precision_coo.push(0, 0, 4.0);
+    precision_coo.push(1, 1, 5.0);
+    let precision = SparseMatrix::from(&precision_coo);
+
+    let observations = Vector::from_vec(vec![2.0, -1.0]);
+    let bias = Vector::from_vec(vec![0.5, 1.0]);
+
+    let (posterior, info) = apply_gaussian_observations_with_precision(
+        &prior,
+        &h,
+        &observations,
+        Some(&bias),
+        &precision,
+    );
+
+    let expected_info = vec![16.0, -20.0];
+    for (actual, expected) in info.iter().zip(expected_info.iter()) {
+        assert!((actual - expected).abs() < 1e-12);
+    }
+
+    let expected_update = vec![vec![9.0, -10.0], vec![-10.0, 20.0]];
+    let actual_update = dense_from_sparse(&ht_precision_weighted_h(&h, &precision));
+    assert_dense_close(&actual_update, &expected_update);
+
+    let expected_posterior = vec![vec![10.0, -10.0], vec![-10.0, 23.0]];
     let actual_posterior = dense_from_sparse(&posterior);
     assert_dense_close(&actual_posterior, &expected_posterior);
 }

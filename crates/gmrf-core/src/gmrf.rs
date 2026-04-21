@@ -271,8 +271,7 @@ impl Gmrf {
 
         let removed_diag =
             self.transformed_constraint_correction_diag(operator, constraint_matrix)?;
-        let constrained_diag =
-            Self::subtract_removed_variance(&unconstrained_diag, &removed_diag)?;
+        let constrained_diag = Self::subtract_removed_variance(&unconstrained_diag, &removed_diag)?;
 
         Ok(TransformedVarianceDecomposition {
             unconstrained_diag,
@@ -306,12 +305,12 @@ impl Gmrf {
             let projected = operator.apply(&solved)?;
             unconstrained_diag += projected.component_mul(&probe);
         }
-        unconstrained_diag = unconstrained_diag / (num_samples as f64);
+        unconstrained_diag =
+            Self::stabilize_estimated_variance_diag(&(unconstrained_diag / (num_samples as f64)));
 
         let removed_diag =
             self.transformed_constraint_correction_diag(operator, constraint_matrix)?;
-        let constrained_diag =
-            Self::subtract_removed_variance(&unconstrained_diag, &removed_diag)?;
+        let constrained_diag = Self::subtract_removed_variance(&unconstrained_diag, &removed_diag)?;
 
         Ok(TransformedVarianceDecomposition {
             unconstrained_diag,
@@ -619,10 +618,7 @@ impl Gmrf {
         Ok(unconstrained + correction)
     }
 
-    fn validate_transformed_operator(
-        &self,
-        operator: &SparseRowOperator,
-    ) -> Result<(), GmrfError> {
+    fn validate_transformed_operator(&self, operator: &SparseRowOperator) -> Result<(), GmrfError> {
         if operator.ncols != self.dimension() {
             return Err(GmrfError::DimensionMismatch(
                 "transformed operator column count must match latent dimension",
@@ -696,6 +692,10 @@ impl Gmrf {
         }
 
         Ok(constrained_diag)
+    }
+
+    fn stabilize_estimated_variance_diag(diag: &Vector) -> Vector {
+        Vector::from_iterator(diag.len(), diag.iter().map(|value| value.max(0.0)))
     }
 
     fn exact_inverse_diag(&mut self) -> Result<Vector, GmrfError> {
@@ -1156,9 +1156,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(transformed.unconstrained_diag.len(), 2);
-        assert!(transformed.unconstrained_diag.iter().all(|value| value.is_finite()));
-        assert!(transformed.constrained_diag.iter().all(|value| value.is_finite()));
-        assert!(transformed.removed_diag.iter().all(|value| value.is_finite()));
+        assert!(transformed
+            .unconstrained_diag
+            .iter()
+            .all(|value| value.is_finite()));
+        assert!(transformed
+            .constrained_diag
+            .iter()
+            .all(|value| value.is_finite()));
+        assert!(transformed
+            .removed_diag
+            .iter()
+            .all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn stabilize_estimated_variance_diag_clamps_negative_entries() {
+        let stabilized =
+            Gmrf::stabilize_estimated_variance_diag(&Vector::from_vec(vec![-1.0, 0.5, -1e-9]));
+        assert_eq!(stabilized[0], 0.0);
+        assert_eq!(stabilized[1], 0.5);
+        assert_eq!(stabilized[2], 0.0);
     }
 
     #[test]

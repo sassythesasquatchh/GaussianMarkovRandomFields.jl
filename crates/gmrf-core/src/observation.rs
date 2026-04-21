@@ -62,6 +62,82 @@ pub fn ht_weighted_h(h: &SparseMatrix, inv_var: f64) -> SparseMatrix {
     SparseMatrix::from(htwh)
 }
 
+fn sparse_matvec(matrix: &SparseMatrix, vector: &Vector) -> Vector {
+    assert_eq!(
+        matrix.ncols(),
+        vector.len(),
+        "sparse matvec dimension mismatch"
+    );
+    let mut out = Vector::zeros(matrix.nrows());
+    for (row, col, value) in matrix.triplet_iter() {
+        out[row] += *value * vector[col];
+    }
+    out
+}
+
+/// Compute H^T Q y for sparse observation precision `Q`.
+pub fn ht_precision_weighted_observations(
+    h: &SparseMatrix,
+    y: &Vector,
+    precision: &SparseMatrix,
+) -> Vector {
+    assert_eq!(
+        precision.nrows(),
+        precision.ncols(),
+        "observation precision must be square"
+    );
+    assert_eq!(
+        precision.nrows(),
+        h.nrows(),
+        "observation precision row count must match observation operator rows"
+    );
+    assert_eq!(
+        y.len(),
+        h.nrows(),
+        "observation vector length must match observation operator rows"
+    );
+    let weighted = sparse_matvec(precision, y);
+    let mut out = Vector::zeros(h.ncols());
+    for (row, col, value) in h.triplet_iter() {
+        out[col] += *value * weighted[row];
+    }
+    out
+}
+
+/// Compute H^T Q H for sparse observation precision `Q`.
+pub fn ht_precision_weighted_h(h: &SparseMatrix, precision: &SparseMatrix) -> SparseMatrix {
+    assert_eq!(
+        precision.nrows(),
+        precision.ncols(),
+        "observation precision must be square"
+    );
+    assert_eq!(
+        precision.nrows(),
+        h.nrows(),
+        "observation precision row count must match observation operator rows"
+    );
+    let qh = sparse_sparse_matmul(
+        precision.as_ref(),
+        h.as_ref(),
+        1.0,
+        get_global_parallelism(),
+    )
+    .expect("sparse-sparse matmul failed for QH");
+    let h_transpose = h
+        .as_ref()
+        .transpose()
+        .to_col_major()
+        .expect("failed to build H^T in column-major form");
+    let htqh = sparse_sparse_matmul(
+        h_transpose.as_ref(),
+        qh.as_ref(),
+        1.0,
+        get_global_parallelism(),
+    )
+    .expect("sparse-sparse matmul failed for H^T Q H");
+    SparseMatrix::from(htqh)
+}
+
 /// Add two sparse matrices, preserving duplicate entries as additive contributions.
 pub fn add_sparse(a: &SparseMatrix, b: &SparseMatrix) -> SparseMatrix {
     let sum = binary_op(a.as_ref(), b.as_ref(), |lhs, rhs| {
@@ -99,5 +175,39 @@ pub fn apply_gaussian_observations(
     };
     let htwh = ht_weighted_h(observation_matrix, inv_var);
     let posterior_precision = add_sparse(prior_precision, &htwh);
+    (posterior_precision, info)
+}
+
+/// Apply Gaussian observation conditioning with an explicit sparse observation precision.
+///
+/// Observations follow `y = H x + b + noise`, where the noise precision is `Q_eps`.
+/// Returns `(posterior_precision, information)` with
+/// `posterior_precision = prior_precision + H^T Q_eps H` and
+/// `information = H^T Q_eps (y - b)`.
+pub fn apply_gaussian_observations_with_precision(
+    prior_precision: &SparseMatrix,
+    observation_matrix: &SparseMatrix,
+    observations: &Vector,
+    observation_bias: Option<&Vector>,
+    observation_precision: &SparseMatrix,
+) -> (SparseMatrix, Vector) {
+    let info = match observation_bias {
+        Some(bias) => {
+            assert_eq!(
+                bias.len(),
+                observations.len(),
+                "observation bias length must match observations length"
+            );
+            let centered = observations - bias;
+            ht_precision_weighted_observations(observation_matrix, &centered, observation_precision)
+        }
+        None => ht_precision_weighted_observations(
+            observation_matrix,
+            observations,
+            observation_precision,
+        ),
+    };
+    let htqh = ht_precision_weighted_h(observation_matrix, observation_precision);
+    let posterior_precision = add_sparse(prior_precision, &htqh);
     (posterior_precision, info)
 }

@@ -116,12 +116,111 @@ pub struct StackedObservationSystem {
 }
 
 #[derive(Debug, Clone)]
-pub struct TimeStackedObservationBuilder {
-    slice_count: usize,
-    slice_dimension: usize,
+pub struct LinearObservationStackBuilder {
+    dimension: usize,
     rows: Vec<(usize, usize, f64)>,
     observations: Vec<f64>,
     bias: Vec<f64>,
+}
+
+impl LinearObservationStackBuilder {
+    pub fn new(dimension: usize) -> Self {
+        Self {
+            dimension,
+            rows: Vec::new(),
+            observations: Vec::new(),
+            bias: Vec::new(),
+        }
+    }
+
+    pub fn push_block(
+        &mut self,
+        column_offset: usize,
+        block: &SparseMatrix,
+        observations: &[f64],
+        bias: &[f64],
+        variance: f64,
+    ) -> Result<(), GmrfError> {
+        self.push_blocks(&[(column_offset, block)], observations, bias, variance)
+    }
+
+    pub fn push_blocks(
+        &mut self,
+        blocks: &[(usize, &SparseMatrix)],
+        observations: &[f64],
+        bias: &[f64],
+        variance: f64,
+    ) -> Result<(), GmrfError> {
+        if blocks.is_empty() {
+            return Err(GmrfError::DimensionMismatch(
+                "at least one observation block is required",
+            ));
+        }
+        let row_count = blocks[0].1.nrows();
+        self.validate_rows(row_count, observations, bias, variance)?;
+        let scale = variance.sqrt().recip();
+        let row_offset = self.observations.len();
+        for (column_offset, block) in blocks {
+            if block.nrows() != row_count {
+                return Err(GmrfError::DimensionMismatch(
+                    "all observation blocks in a term must share the same row count",
+                ));
+            }
+            if *column_offset + block.ncols() > self.dimension {
+                return Err(GmrfError::DimensionMismatch(
+                    "observation block exceeds the latent dimension",
+                ));
+            }
+            for (row, col, value) in block.triplet_iter() {
+                self.rows
+                    .push((row_offset + row, column_offset + col, *value * scale));
+            }
+        }
+        self.observations
+            .extend(observations.iter().map(|value| *value * scale));
+        self.bias.extend(bias.iter().map(|value| *value * scale));
+        Ok(())
+    }
+
+    pub fn finish(self) -> StackedObservationSystem {
+        let mut coo = CooMatrix::new(self.observations.len(), self.dimension);
+        for (row, col, value) in self.rows {
+            coo.push(row, col, value);
+        }
+        StackedObservationSystem {
+            matrix: SparseMatrix::from(&coo),
+            observations: Vector::from_vec(self.observations),
+            bias: Vector::from_vec(self.bias),
+            noise_variance: 1.0,
+        }
+    }
+
+    fn validate_rows(
+        &self,
+        row_count: usize,
+        observations: &[f64],
+        bias: &[f64],
+        variance: f64,
+    ) -> Result<(), GmrfError> {
+        if row_count != observations.len() || row_count != bias.len() {
+            return Err(GmrfError::DimensionMismatch(
+                "observation rows, observations, and bias lengths must match",
+            ));
+        }
+        if !variance.is_finite() || variance <= 0.0 {
+            return Err(GmrfError::DimensionMismatch(
+                "observation variance must be finite and positive",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TimeStackedObservationBuilder {
+    slice_count: usize,
+    slice_dimension: usize,
+    inner: LinearObservationStackBuilder,
 }
 
 impl TimeStackedObservationBuilder {
@@ -129,9 +228,7 @@ impl TimeStackedObservationBuilder {
         Self {
             slice_count,
             slice_dimension,
-            rows: Vec::new(),
-            observations: Vec::new(),
-            bias: Vec::new(),
+            inner: LinearObservationStackBuilder::new(slice_count * slice_dimension),
         }
     }
 
@@ -144,16 +241,9 @@ impl TimeStackedObservationBuilder {
         variance: f64,
     ) -> Result<(), GmrfError> {
         self.validate_slice_block(slice_index, block, observations, bias, variance)?;
-        let scale = variance.sqrt().recip();
-        let row_offset = self.observations.len();
         let col_offset = slice_index * self.slice_dimension;
-        for (row, col, value) in block.triplet_iter() {
-            self.rows.push((row_offset + row, col_offset + col, *value * scale));
-        }
-        self.observations
-            .extend(observations.iter().map(|value| *value * scale));
-        self.bias.extend(bias.iter().map(|value| *value * scale));
-        Ok(())
+        self.inner
+            .push_block(col_offset, block, observations, bias, variance)
     }
 
     pub fn push_transition_block(
@@ -171,43 +261,24 @@ impl TimeStackedObservationBuilder {
             ));
         }
         self.validate_block_rows(left_block, observations, bias, variance)?;
-        if right_block.nrows() != left_block.nrows() || right_block.ncols() != self.slice_dimension {
+        if right_block.nrows() != left_block.nrows() || right_block.ncols() != self.slice_dimension
+        {
             return Err(GmrfError::DimensionMismatch(
                 "right transition block must match the left block row count and slice dimension",
             ));
         }
-        let scale = variance.sqrt().recip();
-        let row_offset = self.observations.len();
         let left_offset = left_slice * self.slice_dimension;
         let right_offset = (left_slice + 1) * self.slice_dimension;
-        for (row, col, value) in left_block.triplet_iter() {
-            self.rows
-                .push((row_offset + row, left_offset + col, *value * scale));
-        }
-        for (row, col, value) in right_block.triplet_iter() {
-            self.rows
-                .push((row_offset + row, right_offset + col, *value * scale));
-        }
-        self.observations
-            .extend(observations.iter().map(|value| *value * scale));
-        self.bias.extend(bias.iter().map(|value| *value * scale));
-        Ok(())
+        self.inner.push_blocks(
+            &[(left_offset, left_block), (right_offset, right_block)],
+            observations,
+            bias,
+            variance,
+        )
     }
 
     pub fn finish(self) -> StackedObservationSystem {
-        let mut coo = CooMatrix::new(
-            self.observations.len(),
-            self.slice_count * self.slice_dimension,
-        );
-        for (row, col, value) in self.rows {
-            coo.push(row, col, value);
-        }
-        StackedObservationSystem {
-            matrix: SparseMatrix::from(&coo),
-            observations: Vector::from_vec(self.observations),
-            bias: Vector::from_vec(self.bias),
-            noise_variance: 1.0,
-        }
+        self.inner.finish()
     }
 
     fn validate_slice_block(
@@ -265,11 +336,13 @@ pub fn sparse_to_core(matrix: &SparseMatrix) -> SparseTripletMatrix {
     SparseTripletMatrix::from_triplets(
         matrix.nrows(),
         matrix.ncols(),
-        matrix.triplet_iter().map(|(row, col, value)| feg_core::SparseTriplet {
-            row,
-            col,
-            value: *value,
-        }),
+        matrix
+            .triplet_iter()
+            .map(|(row, col, value)| feg_core::SparseTriplet {
+                row,
+                col,
+                value: *value,
+            }),
     )
 }
 
@@ -376,5 +449,37 @@ mod tests {
         assert_eq!(system.observations.as_slice(), &[1.5, 2.0]);
         assert_eq!(system.bias.as_slice(), &[0.5, -0.5]);
         assert_eq!(system.noise_variance, 1.0);
+    }
+
+    #[test]
+    fn linear_observation_stack_builder_places_blocks_at_offsets() {
+        let block = sparse_from_core(&SparseTripletMatrix::from_triplets(
+            2,
+            2,
+            [
+                feg_core::SparseTriplet {
+                    row: 0,
+                    col: 0,
+                    value: 1.0,
+                },
+                feg_core::SparseTriplet {
+                    row: 1,
+                    col: 1,
+                    value: -2.0,
+                },
+            ],
+        ));
+        let mut builder = LinearObservationStackBuilder::new(5);
+        builder
+            .push_blocks(&[(0, &block), (3, &block)], &[2.0, 4.0], &[1.0, -1.0], 4.0)
+            .expect("stacked observation term should assemble");
+        let system = builder.finish();
+        assert_eq!(system.matrix.nrows(), 2);
+        assert_eq!(system.matrix.ncols(), 5);
+        assert_eq!(system.observations.as_slice(), &[1.0, 2.0]);
+        assert_eq!(system.bias.as_slice(), &[0.5, -0.5]);
+        let dense = dense_from_sparse(&system.matrix);
+        assert_eq!(dense[0], vec![0.5, 0.0, 0.0, 0.5, 0.0]);
+        assert_eq!(dense[1], vec![0.0, -1.0, 0.0, 0.0, -1.0]);
     }
 }
